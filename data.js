@@ -165,6 +165,90 @@ const Data = {
 
   // ---------- Manager-facing aggregates ----------
 
+  // Today's headline numbers across the whole team, for the 4 metric
+  // tiles. "Received" / "Reviewed" / "Sent to commission" are pattern-
+  // matched by field_key since field sets differ per cycle — this
+  // looks for the most universally meaningful ones across cycles.
+  async getTodayOverallMetrics() {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { data: entries, error } = await supabaseClient
+      .from("daily_entries")
+      .select("field_id, amount, entry_type, field_definitions(field_key, field_label)")
+      .eq("date", today)
+      .in("entry_type", ["individual_increment", "individual_manual_set", "shared_batch_entry", "shared_batch_correction"]);
+    if (error) throw error;
+
+    const { data: attendance, error: attErr } = await supabaseClient
+      .from("attendance_log")
+      .select("employee_id, in_time, out_time")
+      .eq("date", today);
+    if (attErr) throw attErr;
+
+    const { count: totalStaff } = await supabaseClient
+      .from("employees")
+      .select("id", { count: "exact", head: true })
+      .eq("active", true)
+      .eq("is_manager", false);
+
+    const loggedInCount = attendance.filter((a) => a.in_time && !a.out_time).length;
+
+    // Sum totals per field_key across everyone, today.
+    const byKey = {};
+    for (const e of entries) {
+      const key = e.field_definitions?.field_key;
+      if (!key) continue;
+      if (e.entry_type === "individual_manual_set") {
+        byKey[key] = Math.max(byKey[key] || 0, e.amount); // approximation for cross-employee summary
+      } else {
+        byKey[key] = (byKey[key] || 0) + e.amount;
+      }
+    }
+
+    const sumMatching = (substrings) =>
+      Object.entries(byKey)
+        .filter(([k]) => substrings.some((s) => k.includes(s)))
+        .reduce((sum, [, v]) => sum + v, 0);
+
+    return {
+      receivedToday: sumMatching(["received"]),
+      reviewedToday: sumMatching(["reviewed", "compiled", "attended", "collected"]),
+      submittedToCommissionToday: sumMatching(["submitted_to_commission", "wo_sent", "submitted_to_immigration"]),
+      staffLoggedIn: `${loggedInCount} / ${totalStaff || 0}`,
+    };
+  },
+
+  // Per-field totals over the last 7 calendar days, plus today's value,
+  // for the Trends table. Individual fields only (shared_batch fields
+  // are already single daily facts, less useful to trend this way).
+  async getFieldTotalsLast7Days() {
+    const since = new Date();
+    since.setDate(since.getDate() - 6);
+    const sinceStr = since.toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { data: entries, error } = await supabaseClient
+      .from("daily_entries")
+      .select("field_id, amount, date, entry_type, field_definitions(field_key, field_label, entry_mode)")
+      .gte("date", sinceStr)
+      .in("entry_type", ["individual_increment", "shared_batch_entry", "shared_batch_correction"]);
+    if (error) throw error;
+
+    const totals = {};
+    for (const e of entries) {
+      const fd = e.field_definitions;
+      if (!fd) continue;
+      const label = fd.field_label;
+      totals[label] = totals[label] || { last7: 0, today: 0 };
+      totals[label].last7 += e.amount;
+      if (e.date === today) totals[label].today += e.amount;
+    }
+
+    return Object.entries(totals)
+      .map(([label, v]) => ({ label, last7: v.last7, today: v.today }))
+      .sort((a, b) => b.last7 - a.last7);
+  },
+
   async getAllStaffSnapshot() {
     const today = new Date().toISOString().slice(0, 10);
     const { data: employees, error: empErr } = await supabaseClient
