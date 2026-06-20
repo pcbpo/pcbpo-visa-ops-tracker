@@ -19,9 +19,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   const session = await Auth.getSession();
   if (session) {
     try {
-      await Auth.loadEmployeeProfile(session.user.id);
-      await Auth.recordInTimeIfNeeded(session.user.id);
-      await showStaffScreen();
+      const employee = await Auth.loadEmployeeProfile(session.user.id);
+      if (employee.is_manager) {
+        await showManagerScreen();
+      } else {
+        await Auth.recordInTimeIfNeeded(session.user.id);
+        await showStaffScreen();
+      }
     } catch (e) {
       showLoginError(e.message);
       await supabaseClient.auth.signOut();
@@ -68,8 +72,13 @@ async function handleLogin() {
     return;
   }
   try {
-    await Auth.signIn(email, password);
-    await showStaffScreen();
+    const { user } = await Auth.signIn(email, password);
+    if (Auth.currentEmployee.is_manager) {
+      await showManagerScreen();
+    } else {
+      await Auth.recordInTimeIfNeeded(user.id);
+      await showStaffScreen();
+    }
   } catch (e) {
     showLoginError(e.message || "Couldn't log in. Check your email and password.");
   }
@@ -103,6 +112,7 @@ async function handleLogout() {
   await Auth.signOut();
   document.getElementById("staffScreen").classList.add("hidden");
   document.getElementById("summaryScreen").classList.add("hidden");
+  document.getElementById("managerScreen").classList.add("hidden");
   document.getElementById("navUserBox").classList.add("hidden");
   document.getElementById("loginScreen").classList.remove("hidden");
   document.getElementById("emailInput").value = "";
@@ -380,4 +390,158 @@ async function handleLogOffWithSummary() {
 function formatTime(isoString) {
   const d = new Date(isoString);
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+// ---------- manager dashboard ----------
+
+let managerTabsWired = false;
+
+async function showManagerScreen() {
+  document.getElementById("loginScreen").classList.add("hidden");
+  document.getElementById("staffScreen").classList.add("hidden");
+  document.getElementById("summaryScreen").classList.add("hidden");
+  document.getElementById("managerScreen").classList.remove("hidden");
+  document.getElementById("navUserBox").classList.remove("hidden");
+  document.getElementById("navUserName").textContent = Auth.currentEmployee.full_name;
+
+  document.getElementById("mgrDate").textContent = new Date().toLocaleDateString(undefined, {
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+
+  if (!managerTabsWired) {
+    document.querySelectorAll("[data-mgr-tab]").forEach((btn) => {
+      btn.onclick = () => switchManagerTab(btn.dataset.mgrTab);
+    });
+    managerTabsWired = true;
+  }
+
+  await loadManagerToday();
+}
+
+function switchManagerTab(tab) {
+  document.querySelectorAll("[data-mgr-tab]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mgrTab === tab);
+  });
+  document.getElementById("mgrTodayPanel").classList.toggle("hidden", tab !== "today");
+  document.getElementById("mgrTrendsPanel").classList.toggle("hidden", tab !== "trends");
+  document.getElementById("mgrAlertsPanel").classList.toggle("hidden", tab !== "alerts");
+
+  if (tab === "today") loadManagerToday();
+  if (tab === "trends") loadManagerTrends();
+  if (tab === "alerts") loadManagerAlerts();
+}
+
+async function loadManagerToday() {
+  const metricsContainer = document.getElementById("mgrMetrics");
+  metricsContainer.innerHTML = `<div class="mgr-loading">Loading today's numbers…</div>`;
+
+  try {
+    const metrics = await Data.getTodayOverallMetrics();
+    metricsContainer.innerHTML = `
+      <div class="mgr-metric">
+        <div class="mgr-metric-label">Applications received today</div>
+        <div class="mgr-metric-value">${metrics.receivedToday}</div>
+      </div>
+      <div class="mgr-metric">
+        <div class="mgr-metric-label">Reviewed / processed today</div>
+        <div class="mgr-metric-value">${metrics.reviewedToday}</div>
+      </div>
+      <div class="mgr-metric">
+        <div class="mgr-metric-label">Sent onward today</div>
+        <div class="mgr-metric-value">${metrics.submittedToCommissionToday}</div>
+      </div>
+      <div class="mgr-metric">
+        <div class="mgr-metric-label">Staff currently logged in</div>
+        <div class="mgr-metric-value">${metrics.staffLoggedIn}</div>
+      </div>
+    `;
+  } catch (e) {
+    metricsContainer.innerHTML = `<div class="mgr-loading">Couldn't load today's numbers: ${e.message}</div>`;
+  }
+
+  const tbody = document.getElementById("mgrStaffTableBody");
+  tbody.innerHTML = `<tr><td colspan="4" class="muted">Loading staff…</td></tr>`;
+  try {
+    const staff = await Data.getAllStaffSnapshot();
+    if (staff.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" class="muted">No active staff yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = staff
+      .map(
+        (s) => `
+        <tr>
+          <td class="name">${s.full_name}</td>
+          <td class="muted">${s.in_time ? formatTime(s.in_time) : "—"}</td>
+          <td class="muted">${s.out_time ? formatTime(s.out_time) : "—"}</td>
+          <td>${s.today_total}</td>
+        </tr>
+      `
+      )
+      .join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">Couldn't load staff: ${e.message}</td></tr>`;
+  }
+}
+
+async function loadManagerTrends() {
+  const tbody = document.getElementById("mgrTrendsTableBody");
+  tbody.innerHTML = `<tr><td colspan="3" class="muted">Loading…</td></tr>`;
+  try {
+    const rows = await Data.getFieldTotalsLast7Days();
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="3" class="muted">No entries logged in the last 7 days yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows
+      .map(
+        (r) => `
+        <tr>
+          <td class="name">${r.label}</td>
+          <td>${r.last7}</td>
+          <td class="muted">${r.today}</td>
+        </tr>
+      `
+      )
+      .join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="3" class="muted">Couldn't load trends: ${e.message}</td></tr>`;
+  }
+}
+
+async function loadManagerAlerts() {
+  const container = document.getElementById("mgrAlertsContainer");
+  container.innerHTML = `<div class="mgr-loading">Checking two-week trends…</div>`;
+  try {
+    const declining = await Data.getDecliningEmployees(20);
+    if (declining.length === 0) {
+      container.innerHTML = `<div class="mgr-empty">No employees currently flagged. This compares each person's last 10 working days against the 10 before that — it needs a few weeks of entries before it can say anything meaningful.</div>`;
+      return;
+    }
+
+    const staff = await Data.getAllStaffSnapshot();
+    const nameById = Object.fromEntries(staff.map((s) => [s.id, s.full_name]));
+
+    container.innerHTML = declining
+      .map(
+        (d) => `
+        <div class="mgr-alert-card">
+          <div class="mgr-alert-top">
+            <div>
+              <div class="mgr-alert-title">${nameById[d.employeeId] || "Unknown"} — sustained decline, 2 weeks</div>
+              <div class="mgr-alert-body">
+                Average daily output down ${d.declinePercent.toFixed(0)}% over the last two weeks compared to the
+                two weeks prior (${d.recentAvg.toFixed(1)} vs ${d.priorAvg.toFixed(1)} per day). This is private to
+                you, for a conversation, not a score shown anywhere they can see.
+              </div>
+            </div>
+            <span class="mgr-alert-tag">Suggested: 1:1</span>
+          </div>
+        </div>
+      `
+      )
+      .join("");
+  } catch (e) {
+    container.innerHTML = `<div class="mgr-loading">Couldn't check trends: ${e.message}</div>`;
+  }
 }
