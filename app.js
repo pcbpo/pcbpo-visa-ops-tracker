@@ -343,9 +343,10 @@ function wireStaffEvents() {
 
 async function handleLogOffWithSummary() {
   const note = document.getElementById("noteBox").value.trim();
-  if (note) {
+  const extraWork = document.getElementById("extraWorkBox").value.trim();
+  if (note || extraWork) {
     try {
-      await Data.saveNote(Auth.currentEmployee.id, note);
+      await Data.saveNote(Auth.currentEmployee.id, note, extraWork);
     } catch (e) {
       console.error("Couldn't save note:", e);
     }
@@ -374,8 +375,11 @@ async function handleLogOffWithSummary() {
   });
 
   const noteBox = document.getElementById("summaryNoteBox");
-  if (note) {
-    noteBox.textContent = "Note: " + note;
+  const noteLines = [];
+  if (extraWork) noteLines.push("Additional work today: " + extraWork);
+  if (note) noteLines.push("Note: " + note);
+  if (noteLines.length > 0) {
+    noteBox.innerHTML = noteLines.map((l) => `<div>${l}</div>`).join("");
     noteBox.classList.remove("hidden");
   } else {
     noteBox.classList.add("hidden");
@@ -424,10 +428,12 @@ function switchManagerTab(tab) {
   });
   document.getElementById("mgrTodayPanel").classList.toggle("hidden", tab !== "today");
   document.getElementById("mgrTrendsPanel").classList.toggle("hidden", tab !== "trends");
+  document.getElementById("mgrMonthlyPanel").classList.toggle("hidden", tab !== "monthly");
   document.getElementById("mgrAlertsPanel").classList.toggle("hidden", tab !== "alerts");
 
   if (tab === "today") loadManagerToday();
   if (tab === "trends") loadManagerTrends();
+  if (tab === "monthly") loadManagerMonthly();
   if (tab === "alerts") loadManagerAlerts();
 }
 
@@ -509,6 +515,78 @@ async function loadManagerTrends() {
   }
 }
 
+let monthlyEmployeeListLoaded = false;
+
+async function loadManagerMonthly() {
+  const employeeSelect = document.getElementById("mgrMonthlyEmployeeSelect");
+  const fySelect = document.getElementById("mgrMonthlyFySelect");
+
+  if (!monthlyEmployeeListLoaded) {
+    try {
+      const staff = await Data.getAllStaffSnapshot();
+      employeeSelect.innerHTML = staff
+        .map((s) => `<option value="${s.id}">${s.full_name}</option>`)
+        .join("");
+
+      const fys = await Data.getAvailableFinancialYears();
+      fySelect.innerHTML = fys
+        .map((fy) => `<option value="${fy.startDate}|${fy.endDate}">${fy.fyLabel}</option>`)
+        .join("");
+
+      employeeSelect.onchange = renderManagerMonthlyTable;
+      fySelect.onchange = renderManagerMonthlyTable;
+      monthlyEmployeeListLoaded = true;
+    } catch (e) {
+      document.getElementById("mgrMonthlyTableBody").innerHTML =
+        `<tr><td class="muted">Couldn't load staff list: ${e.message}</td></tr>`;
+      return;
+    }
+  }
+
+  await renderManagerMonthlyTable();
+}
+
+async function renderManagerMonthlyTable() {
+  const employeeId = document.getElementById("mgrMonthlyEmployeeSelect").value;
+  const fyValue = document.getElementById("mgrMonthlyFySelect").value;
+  if (!employeeId || !fyValue) return;
+  const [startDate, endDate] = fyValue.split("|");
+
+  const thead = document.getElementById("mgrMonthlyTableHead");
+  const tbody = document.getElementById("mgrMonthlyTableBody");
+  tbody.innerHTML = `<tr><td class="muted">Loading…</td></tr>`;
+
+  try {
+    const { months, fieldLabels } = await Data.getMonthlyKpiForEmployee(employeeId, startDate, endDate);
+
+    if (fieldLabels.length === 0) {
+      thead.innerHTML = "";
+      tbody.innerHTML = `<tr><td class="muted">No entries logged for this person in this financial year yet.</td></tr>`;
+      return;
+    }
+
+    thead.innerHTML = `
+      <tr>
+        <th>Field</th>
+        ${months.map((m) => `<th>${m.label}</th>`).join("")}
+      </tr>
+    `;
+
+    tbody.innerHTML = fieldLabels
+      .map(
+        (label) => `
+        <tr>
+          <td class="name">${label}</td>
+          ${months.map((m) => `<td>${m.fieldTotals[label] || 0}</td>`).join("")}
+        </tr>
+      `
+      )
+      .join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td class="muted">Couldn't load monthly KPI: ${e.message}</td></tr>`;
+  }
+}
+
 async function loadManagerAlerts() {
   const container = document.getElementById("mgrAlertsContainer");
   container.innerHTML = `<div class="mgr-loading">Checking two-week trends…</div>`;
@@ -522,9 +600,32 @@ async function loadManagerAlerts() {
     const staff = await Data.getAllStaffSnapshot();
     const nameById = Object.fromEntries(staff.map((s) => [s.id, s.full_name]));
 
-    container.innerHTML = declining
-      .map(
-        (d) => `
+    const since = new Date();
+    since.setDate(since.getDate() - 28);
+    const sinceStr = since.toISOString().slice(0, 10);
+
+    const cards = await Promise.all(
+      declining.map(async (d) => {
+        let notesHtml = "";
+        try {
+          const notes = await Data.getNotesForEmployeeInRange(d.employeeId, sinceStr);
+          const relevant = notes.filter((n) => n.note_text || n.additional_work_text);
+          if (relevant.length > 0) {
+            notesHtml = relevant
+              .slice(0, 5)
+              .map((n) => {
+                const parts = [];
+                if (n.additional_work_text) parts.push(`Extra work: ${n.additional_work_text}`);
+                if (n.note_text) parts.push(`Note: ${n.note_text}`);
+                return `<div class="mgr-alert-note">${n.date} — ${parts.join(" · ")}</div>`;
+              })
+              .join("");
+          }
+        } catch (e) {
+          console.error("Couldn't load notes for", d.employeeId, e);
+        }
+
+        return `
         <div class="mgr-alert-card">
           <div class="mgr-alert-top">
             <div>
@@ -534,13 +635,20 @@ async function loadManagerAlerts() {
                 two weeks prior (${d.recentAvg.toFixed(1)} vs ${d.priorAvg.toFixed(1)} per day). This is private to
                 you, for a conversation, not a score shown anywhere they can see.
               </div>
+              ${
+                notesHtml
+                  ? `<div style="margin-top:8px;"><strong style="font-size:12px;">What they logged in this window:</strong>${notesHtml}</div>`
+                  : `<div class="mgr-alert-note">No notes or additional work logged in this window — worth asking directly.</div>`
+              }
             </div>
             <span class="mgr-alert-tag">Suggested: 1:1</span>
           </div>
         </div>
-      `
-      )
-      .join("");
+      `;
+      })
+    );
+
+    container.innerHTML = cards.join("");
   } catch (e) {
     container.innerHTML = `<div class="mgr-loading">Couldn't check trends: ${e.message}</div>`;
   }
