@@ -138,18 +138,26 @@ async function showStaffScreen() {
   clientDepartments = await Data.getClientDepartments();
   employeeFields = await Data.getFieldsForEmployee(Auth.currentEmployee);
   sharedEntries = await Data.getTodaySharedEntries();
-  const todayTotals = await Data.getTodayTotals(Auth.currentEmployee.id);
+  const todayByDept = await Data.getTodayTotalsByDepartment(Auth.currentEmployee.id);
 
-  renderIndividualFields(todayTotals);
+  renderIndividualFields(todayByDept);
   renderSharedFields();
-  updateEntryCount(todayTotals);
+  updateEntryCountFromByDept(todayByDept);
 }
 
-function deptOptionsHtml() {
-  return clientDepartments.map((d) => `<option value="${d.id}">${d.name}</option>`).join("");
+function deptName(deptId) {
+  const d = clientDepartments.find((x) => x.id === deptId);
+  return d ? d.name : "—";
 }
 
-function renderIndividualFields(todayTotals) {
+function deptOptionsHtml(excludeIds = []) {
+  return clientDepartments
+    .filter((d) => !excludeIds.includes(d.id))
+    .map((d) => `<option value="${d.id}">${d.name}</option>`)
+    .join("");
+}
+
+function renderIndividualFields(todayByDept) {
   const container = document.getElementById("individualFieldsContainer");
   const individual = employeeFields.filter((f) => f.entry_mode === "individual");
 
@@ -173,53 +181,168 @@ function renderIndividualFields(todayTotals) {
     groupDiv.innerHTML = `<div class="group-label">${groupName}</div>`;
 
     fields.forEach((f) => {
-      const current = todayTotals[f.id] || 0;
-      const row = document.createElement("div");
-      row.className = "field-card";
-      row.innerHTML = `
-        <span class="field-label">${f.field_label}</span>
-        <div class="field-controls">
-          ${f.requires_client_dept ? `<select class="dept-select" data-field="${f.id}">${deptOptionsHtml()}</select>` : ""}
-          <input type="number" min="0" value="${current}" data-field-input="${f.id}" />
-          <button class="btn-tap" data-bump="${f.id}" data-amount="1">+1</button>
-          <button class="btn-tap" data-bump="${f.id}" data-amount="5">+5</button>
-        </div>
-      `;
-      groupDiv.appendChild(row);
+      groupDiv.appendChild(buildFieldCard(f, todayByDept[f.id] || {}));
     });
     container.appendChild(groupDiv);
   }
-
-  container.querySelectorAll("[data-bump]").forEach((btn) => {
-    btn.onclick = () => handleBump(btn.dataset.bump, parseInt(btn.dataset.amount, 10));
-  });
-  container.querySelectorAll("[data-field-input]").forEach((input) => {
-    input.onchange = () => handleManualSet(input.dataset.fieldInput, input.value);
-  });
 }
 
-function getSelectedDept(fieldId) {
-  const select = document.querySelector(`select[data-field="${fieldId}"]`);
-  return select ? select.value : null;
+function buildFieldCard(field, deptTotals) {
+  const card = document.createElement("div");
+  card.className = "field-card";
+  card.style.flexDirection = "column";
+  card.style.alignItems = "stretch";
+  card.dataset.fieldCard = field.id;
+
+  const grandTotal = Object.values(deptTotals).reduce((s, v) => s + v, 0);
+
+  if (!field.requires_client_dept) {
+    // Simple case: no department breakdown needed at all (e.g. petty cash counts).
+    card.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <span class="field-label">${field.field_label}</span>
+        <div class="field-controls">
+          <input type="number" min="0" value="${grandTotal}" data-field-input="${field.id}" data-dept="__none__" />
+          <button class="btn-tap" data-bump="${field.id}" data-dept="__none__" data-amount="1">+1</button>
+          <button class="btn-tap" data-bump="${field.id}" data-dept="__none__" data-amount="5">+5</button>
+        </div>
+      </div>
+    `;
+    wireFieldCardEvents(card);
+    return card;
+  }
+
+  const touchedDeptIds = Object.keys(deptTotals).filter((k) => k !== "__none__");
+  const rowsHtml = touchedDeptIds
+    .map(
+      (deptId) => `
+      <div class="dept-row" data-dept-row="${deptId}" style="display:flex; justify-content:space-between; align-items:center; padding:6px 0;">
+        <span style="font-size:13px;">${deptName(deptId)}</span>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <input type="number" min="0" value="${deptTotals[deptId]}" style="width:56px; text-align:right;" data-field-input="${field.id}" data-dept="${deptId}" />
+          <button class="btn-tap" data-bump="${field.id}" data-dept="${deptId}" data-amount="1">+1</button>
+        </div>
+      </div>
+    `
+    )
+    .join("");
+
+  card.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <span class="field-label">${field.field_label}</span>
+      <span style="font-size:18px; font-weight:500;" data-field-total="${field.id}">${grandTotal}</span>
+    </div>
+    ${
+      touchedDeptIds.length > 0
+        ? `<div style="font-size:11px; color:var(--gray); margin:2px 0 8px;">across ${touchedDeptIds.length} department${touchedDeptIds.length > 1 ? "s" : ""} today</div>`
+        : ""
+    }
+    <div data-dept-rows-container="${field.id}" style="border-top:${touchedDeptIds.length > 0 ? "1px solid var(--border)" : "none"}; padding-top:${touchedDeptIds.length > 0 ? "6px" : "0"};">
+      ${rowsHtml}
+    </div>
+    <div style="padding-top:8px;">
+      <select class="dept-select" data-add-dept="${field.id}" style="width:100%;">
+        <option value="">+ Add a department…</option>
+        ${deptOptionsHtml(touchedDeptIds)}
+      </select>
+    </div>
+  `;
+
+  wireFieldCardEvents(card);
+  return card;
 }
 
-async function handleBump(fieldId, amount) {
-  const deptId = getSelectedDept(fieldId);
+function wireFieldCardEvents(card) {
+  card.querySelectorAll("[data-bump]").forEach((btn) => {
+    btn.onclick = () =>
+      handleBump(btn.dataset.bump, btn.dataset.dept, parseInt(btn.dataset.amount, 10));
+  });
+  card.querySelectorAll("[data-field-input]").forEach((input) => {
+    input.onchange = () =>
+      handleManualSet(input.dataset.fieldInput, input.dataset.dept, input.value);
+  });
+  const addDeptSelect = card.querySelector("[data-add-dept]");
+  if (addDeptSelect) {
+    addDeptSelect.onchange = () => {
+      const fieldId = addDeptSelect.dataset.addDept;
+      const deptId = addDeptSelect.value;
+      if (!deptId) return;
+      addDeptRowToCard(fieldId, deptId, 0);
+      addDeptSelect.value = "";
+    };
+  }
+}
+
+// Adds a new department row to an already-rendered field card, without
+// a full re-render — keeps typing/tapping elsewhere on the screen
+// uninterrupted.
+function addDeptRowToCard(fieldId, deptId, initialValue) {
+  const container = document.querySelector(`[data-dept-rows-container="${fieldId}"]`);
+  if (!container) return;
+  if (container.querySelector(`[data-dept-row="${deptId}"]`)) return; // already present
+
+  container.style.borderTop = "1px solid var(--border)";
+  container.style.paddingTop = "6px";
+
+  const row = document.createElement("div");
+  row.className = "dept-row";
+  row.dataset.deptRow = deptId;
+  row.style.cssText = "display:flex; justify-content:space-between; align-items:center; padding:6px 0;";
+  row.innerHTML = `
+    <span style="font-size:13px;">${deptName(deptId)}</span>
+    <div style="display:flex; align-items:center; gap:6px;">
+      <input type="number" min="0" value="${initialValue}" style="width:56px; text-align:right;" data-field-input="${fieldId}" data-dept="${deptId}" />
+      <button class="btn-tap" data-bump="${fieldId}" data-dept="${deptId}" data-amount="1">+1</button>
+    </div>
+  `;
+  container.appendChild(row);
+  row.querySelector("[data-bump]").onclick = () => handleBump(fieldId, deptId, 1);
+  row.querySelector("[data-field-input]").onchange = (e) =>
+    handleManualSet(fieldId, deptId, e.target.value);
+
+  // remove that department from the "add" dropdown's options
+  const addSelect = document.querySelector(`[data-add-dept="${fieldId}"]`);
+  if (addSelect) {
+    const opt = addSelect.querySelector(`option[value="${deptId}"]`);
+    if (opt) opt.remove();
+  }
+
+  updateFieldCardSubtotal(fieldId);
+}
+
+function updateFieldCardSubtotal(fieldId) {
+  const card = document.querySelector(`[data-field-card="${fieldId}"]`);
+  if (!card) return;
+  const inputs = card.querySelectorAll(`[data-field-input="${fieldId}"]`);
+  let total = 0;
+  inputs.forEach((inp) => (total += parseInt(inp.value, 10) || 0));
+  const totalSpan = card.querySelector(`[data-field-total="${fieldId}"]`);
+  if (totalSpan) totalSpan.textContent = total;
+
+  const deptCount = card.querySelectorAll("[data-dept-row]").length;
+  const subtitle = card.querySelector("div[style*='margin:2px 0 8px']");
+  // subtitle text isn't critical to keep perfectly live; full re-render on next screen load corrects it
+}
+
+async function handleBump(fieldId, deptKey, amount) {
+  const deptId = deptKey === "__none__" ? null : deptKey;
   try {
     await Data.logIncrement(Auth.currentEmployee.id, fieldId, deptId, amount);
-    const input = document.querySelector(`[data-field-input="${fieldId}"]`);
-    input.value = parseInt(input.value || "0", 10) + amount;
+    const input = document.querySelector(`[data-field-input="${fieldId}"][data-dept="${deptKey}"]`);
+    if (input) input.value = (parseInt(input.value, 10) || 0) + amount;
+    updateFieldCardSubtotal(fieldId);
     refreshEntryCount();
   } catch (e) {
     alert("Couldn't save: " + e.message);
   }
 }
 
-async function handleManualSet(fieldId, rawValue) {
+async function handleManualSet(fieldId, deptKey, rawValue) {
   const amount = Math.max(0, parseInt(rawValue, 10) || 0);
-  const deptId = getSelectedDept(fieldId);
+  const deptId = deptKey === "__none__" ? null : deptKey;
   try {
     await Data.setManualValue(Auth.currentEmployee.id, fieldId, deptId, amount);
+    updateFieldCardSubtotal(fieldId);
     refreshEntryCount();
   } catch (e) {
     alert("Couldn't save: " + e.message);
@@ -323,6 +446,14 @@ async function handleSharedCorrection(fieldId) {
 
 function updateEntryCount(todayTotals) {
   const total = Object.values(todayTotals).reduce((s, v) => s + v, 0);
+  document.getElementById("entryCount").textContent = `${total} total entries logged today`;
+}
+
+function updateEntryCountFromByDept(todayByDept) {
+  let total = 0;
+  for (const fieldTotals of Object.values(todayByDept)) {
+    total += Object.values(fieldTotals).reduce((s, v) => s + v, 0);
+  }
   document.getElementById("entryCount").textContent = `${total} total entries logged today`;
 }
 
