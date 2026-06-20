@@ -3,6 +3,104 @@
 // through here so the UI code stays simple.
 
 const Data = {
+  // PCBPO's financial year runs 1 April – 31 March.
+  // Given any date, returns { fyLabel, startDate, endDate } for the
+  // financial year that date falls within.
+  getFinancialYearFor(date = new Date()) {
+    const year = date.getFullYear();
+    const isAfterApril = date.getMonth() >= 3; // month 3 = April (0-indexed)
+    const startYear = isAfterApril ? year : year - 1;
+    const endYear = startYear + 1;
+    return {
+      fyLabel: `FY ${startYear}–${endYear}`,
+      startDate: `${startYear}-04-01`,
+      endDate: `${endYear}-03-31`,
+    };
+  },
+
+  // Returns the list of available financial years that have any data,
+  // for a dropdown — plus the current one even if it has no data yet.
+  async getAvailableFinancialYears() {
+    const { data, error } = await supabaseClient
+      .from("daily_entries")
+      .select("date")
+      .order("date", { ascending: true })
+      .limit(1);
+    if (error) throw error;
+
+    const years = new Set();
+    const current = this.getFinancialYearFor(new Date());
+    years.add(current.fyLabel);
+
+    if (data && data.length > 0) {
+      const earliest = new Date(data[0].date);
+      const earliestFY = this.getFinancialYearFor(earliest);
+      // walk forward from earliest FY to current FY
+      let cursor = new Date(earliestFY.startDate);
+      const currentStart = new Date(current.startDate);
+      while (cursor <= currentStart) {
+        years.add(this.getFinancialYearFor(cursor).fyLabel);
+        cursor.setFullYear(cursor.getFullYear() + 1);
+      }
+    }
+    return [...years].sort().reverse().map((label) => {
+      const fy = this._fyFromLabel(label);
+      return fy;
+    });
+  },
+
+  _fyFromLabel(label) {
+    const startYear = parseInt(label.match(/\d{4}/)[0], 10);
+    return {
+      fyLabel: label,
+      startDate: `${startYear}-04-01`,
+      endDate: `${startYear + 1}-03-31`,
+    };
+  },
+
+  // Monthly KPI breakdown for ONE employee, across a financial year.
+  // Returns an array of { month: 'Apr 2026', fieldTotals: { label: total } }
+  // plus a flat field list so the UI can build a table.
+  async getMonthlyKpiForEmployee(employeeId, startDate, endDate) {
+    const { data: entries, error } = await supabaseClient
+      .from("daily_entries")
+      .select("date, amount, entry_type, field_definitions(field_label, entry_mode)")
+      .eq("employee_id", employeeId)
+      .gte("date", startDate)
+      .lte("date", endDate)
+      .in("entry_type", ["individual_increment", "shared_batch_entry", "shared_batch_correction"]);
+    if (error) throw error;
+
+    const byMonth = {}; // 'YYYY-MM' -> { label: total }
+    const allFieldLabels = new Set();
+
+    for (const e of entries) {
+      const fd = e.field_definitions;
+      if (!fd) continue;
+      const monthKey = e.date.slice(0, 7); // YYYY-MM
+      byMonth[monthKey] = byMonth[monthKey] || {};
+      byMonth[monthKey][fd.field_label] = (byMonth[monthKey][fd.field_label] || 0) + e.amount;
+      allFieldLabels.add(fd.field_label);
+    }
+
+    // Build ordered list of months across the FY, April first, so empty
+    // months still show as zero rather than being silently skipped.
+    const months = [];
+    let cursor = new Date(startDate);
+    const end = new Date(endDate);
+    while (cursor <= end) {
+      const key = cursor.toISOString().slice(0, 7);
+      months.push({
+        key,
+        label: cursor.toLocaleDateString(undefined, { month: "short", year: "numeric" }),
+        fieldTotals: byMonth[key] || {},
+      });
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+
+    return { months, fieldLabels: [...allFieldLabels].sort() };
+  },
+
   async getClientDepartments() {
     const { data, error } = await supabaseClient
       .from("client_departments")
@@ -142,13 +240,33 @@ const Data = {
     if (error) throw error;
   },
 
-  async saveNote(employeeId, noteText) {
+  async saveNote(employeeId, noteText, additionalWorkText) {
     const today = new Date().toISOString().slice(0, 10);
     const { error } = await supabaseClient.from("daily_note").upsert(
-      { employee_id: employeeId, date: today, note_text: noteText },
+      {
+        employee_id: employeeId,
+        date: today,
+        note_text: noteText,
+        additional_work_text: additionalWorkText,
+      },
       { onConflict: "employee_id,date" }
     );
     if (error) throw error;
+  },
+
+  // Used by the manager's PPIP alert view, to show what someone logged
+  // as extra/unassigned work over the flagged window — context for why
+  // their tracked-field numbers might look low without it being a
+  // genuine performance issue.
+  async getNotesForEmployeeInRange(employeeId, sinceDate) {
+    const { data, error } = await supabaseClient
+      .from("daily_note")
+      .select("date, note_text, additional_work_text")
+      .eq("employee_id", employeeId)
+      .gte("date", sinceDate)
+      .order("date", { ascending: false });
+    if (error) throw error;
+    return data;
   },
 
   async getTodayAttendance(employeeId) {
