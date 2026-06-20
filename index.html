@@ -151,6 +151,49 @@
     font-size: 12.5px; color: var(--gray); border-top: 1px solid var(--border);
     padding-top: 12px; margin-top: 12px;
   }
+
+  /* ---------- Manager dashboard ---------- */
+  .mgr-wrap { max-width: 960px; margin: 0 auto; padding: 28px 24px 64px; }
+  .mgr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
+  .mgr-title { font-size: 19px; font-weight: 500; margin: 0 0 2px; }
+  .mgr-date { font-size: 12.5px; color: var(--gray); }
+  .mgr-tabs { display: flex; gap: 4px; background: #F4F2EC; padding: 4px; border-radius: 9px; }
+  .mgr-tab {
+    border: none; padding: 6px 13px; border-radius: 6px; font-size: 12.5px; font-weight: 500;
+    cursor: pointer; background: transparent; color: var(--gray);
+  }
+  .mgr-tab.active { background: white; color: #1a1a1a; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
+  .mgr-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+  .mgr-metric { background: #F4F2EC; border-radius: 10px; padding: 14px 16px; }
+  .mgr-metric-label { font-size: 11.5px; color: var(--gray); margin-bottom: 6px; }
+  .mgr-metric-value { font-size: 22px; font-weight: 500; }
+
+  .mgr-table-wrap { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .mgr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .mgr-table thead tr { background: #FAF9F5; text-align: left; }
+  .mgr-table th { padding: 9px 14px; font-weight: 500; font-size: 11.5px; color: var(--gray); }
+  .mgr-table td { padding: 9px 14px; border-top: 1px solid var(--border); }
+  .mgr-table td.name { font-weight: 500; }
+  .mgr-table td.muted { color: var(--gray); }
+
+  .mgr-section-label { font-size: 13px; font-weight: 500; margin-bottom: 10px; }
+
+  .mgr-alert-card {
+    border: 1px solid #BA751740; background: #FAEEDA40; border-radius: 12px;
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .mgr-alert-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .mgr-alert-title { font-size: 13.5px; font-weight: 500; margin-bottom: 4px; }
+  .mgr-alert-body { font-size: 12.5px; color: var(--gray); line-height: 1.6; max-width: 560px; }
+  .mgr-alert-note { font-size: 12px; color: var(--gray); margin-top: 8px; }
+  .mgr-alert-tag {
+    font-size: 11px; font-weight: 500; color: #633806; background: #FAEEDA;
+    padding: 3px 9px; border-radius: 6px; white-space: nowrap;
+  }
+  .mgr-empty { font-size: 12px; color: var(--gray); text-align: center; padding: 20px 0; }
+
+  .mgr-loading { font-size: 13px; color: var(--gray); padding: 20px 0; }
 </style>
 </head>
 <body>
@@ -237,6 +280,52 @@
     <div id="summaryRows"></div>
     <div class="summary-note hidden" id="summaryNoteBox"></div>
     <button class="btn-secondary" id="backToEntryBtn">Back to entry screen</button>
+  </div>
+</div>
+
+<!-- MANAGER DASHBOARD -->
+<div id="managerScreen" class="mgr-wrap hidden">
+  <div class="mgr-header">
+    <div>
+      <h1 class="mgr-title">Manager dashboard</h1>
+      <div class="mgr-date" id="mgrDate"></div>
+    </div>
+    <div class="mgr-tabs">
+      <button class="mgr-tab active" data-mgr-tab="today">Today</button>
+      <button class="mgr-tab" data-mgr-tab="trends">Trends</button>
+      <button class="mgr-tab" data-mgr-tab="alerts">PPIP alerts</button>
+    </div>
+  </div>
+
+  <div id="mgrTodayPanel">
+    <div class="mgr-metrics" id="mgrMetrics"></div>
+    <div class="mgr-section-label">Staff snapshot</div>
+    <div class="mgr-table-wrap">
+      <table class="mgr-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>In</th><th>Out</th><th>Today's total</th>
+          </tr>
+        </thead>
+        <tbody id="mgrStaffTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="mgrTrendsPanel" class="hidden">
+    <div class="mgr-section-label">Field totals, last 7 days</div>
+    <div class="mgr-table-wrap">
+      <table class="mgr-table">
+        <thead>
+          <tr><th>Field</th><th>Total (7 days)</th><th>Today</th></tr>
+        </thead>
+        <tbody id="mgrTrendsTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="mgrAlertsPanel" class="hidden">
+    <div id="mgrAlertsContainer"></div>
   </div>
 </div>
 
