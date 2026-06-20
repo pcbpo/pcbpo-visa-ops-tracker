@@ -187,24 +187,42 @@ const Data = {
     return totals;
   },
 
-  // Shared-batch fields: returns today's single entry per field (if any),
-  // visible to the whole team regardless of who's logged in.
+  // Shared-batch fields: returns today's entries per field, grouped by
+  // department, since one logging event (e.g. one commission letter)
+  // can cover several departments at once. Returns:
+  // { [field_id]: { rows: [{id, client_dept_id, amount}, ...], total, loggedBy, loggedAt } }
+  // If a field has any correction rows, only the correction rows are
+  // shown (as the new full breakdown) — corrections replace, not merge.
   async getTodaySharedEntries() {
     const today = new Date().toISOString().slice(0, 10);
     const { data, error } = await supabaseClient
       .from("daily_entries")
-      .select("field_id, amount, entry_type, created_at, employee_id, employees(full_name)")
+      .select("id, field_id, client_dept_id, amount, entry_type, created_at, employee_id, employees(full_name)")
       .eq("date", today)
       .in("entry_type", ["shared_batch_entry", "shared_batch_correction"])
       .order("created_at", { ascending: true });
     if (error) throw error;
 
-    // last entry per field wins (corrections supersede the original)
-    const latest = {};
+    const byField = {};
     for (const row of data) {
-      latest[row.field_id] = row;
+      byField[row.field_id] = byField[row.field_id] || [];
+      byField[row.field_id].push(row);
     }
-    return latest;
+
+    const result = {};
+    for (const [fieldId, rows] of Object.entries(byField)) {
+      const corrections = rows.filter((r) => r.entry_type === "shared_batch_correction");
+      const activeRows = corrections.length > 0 ? corrections : rows;
+      const total = activeRows.reduce((s, r) => s + r.amount, 0);
+      const last = activeRows[activeRows.length - 1];
+      result[fieldId] = {
+        rows: activeRows,
+        total,
+        loggedBy: last.employees?.full_name || "—",
+        loggedAt: last.created_at,
+      };
+    }
+    return result;
   },
 
   async logIncrement(employeeId, fieldId, clientDeptId, amount) {
@@ -233,40 +251,44 @@ const Data = {
     if (error) throw error;
   },
 
-  async logSharedBatch(employeeId, fieldId, clientDeptId, amount) {
+  // entries: array of { clientDeptId, amount } — one logging action that
+  // can cover several departments at once (e.g. one commission letter
+  // listing several clients). Inserted together; blocked if the field
+  // already has a batch logged today.
+  async logSharedBatch(employeeId, fieldId, entries) {
     const today = new Date().toISOString().slice(0, 10);
-    // Guard against a race where two people submit at nearly the same
-    // moment: re-check immediately before insert. The RLS layer doesn't
-    // enforce uniqueness here (kept simple for v1), so this check is
-    // best-effort — a manager can always issue a correction afterward.
     const existing = await this.getTodaySharedEntries();
     if (existing[fieldId]) {
       throw new Error(
-        `Already logged today by ${existing[fieldId].employees?.full_name || "someone"}. Use "Request correction" instead.`
+        `Already logged today by ${existing[fieldId].loggedBy}. Use "Request correction" instead.`
       );
     }
-    const { error } = await supabaseClient.from("daily_entries").insert({
+    const rows = entries.map((e) => ({
       employee_id: employeeId,
       field_id: fieldId,
-      client_dept_id: clientDeptId,
+      client_dept_id: e.clientDeptId,
       date: today,
-      amount,
+      amount: e.amount,
       entry_type: "shared_batch_entry",
-    });
+    }));
+    const { error } = await supabaseClient.from("daily_entries").insert(rows);
     if (error) throw error;
   },
 
-  async correctSharedBatch(employeeId, fieldId, clientDeptId, newAmount, originalEntryId) {
+  // Corrections replace the field's WHOLE breakdown for today, same
+  // shape as the original entry (one or more departments at once).
+  async correctSharedBatch(employeeId, fieldId, entries, originalEntryId) {
     const today = new Date().toISOString().slice(0, 10);
-    const { error } = await supabaseClient.from("daily_entries").insert({
+    const rows = entries.map((e) => ({
       employee_id: employeeId,
       field_id: fieldId,
-      client_dept_id: clientDeptId,
+      client_dept_id: e.clientDeptId,
       date: today,
-      amount: newAmount,
+      amount: e.amount,
       entry_type: "shared_batch_correction",
       corrects_entry_id: originalEntryId,
-    });
+    }));
+    const { error } = await supabaseClient.from("daily_entries").insert(rows);
     if (error) throw error;
   },
 
@@ -437,6 +459,35 @@ const Data = {
   // Two-week trend check used for the PPIP alert. Returns employees
   // whose average daily output over the last 10 working days is down
   // significantly vs the 10 working days before that.
+  // Average daily total (across ALL individual fields combined) for an
+  // employee over their last N working days, EXCLUDING today — used to
+  // show "up/down X% vs your recent average" on the logout summary.
+  async getRecentDailyAverage(employeeId, workingDays = 5) {
+    const today = new Date().toISOString().slice(0, 10);
+    const since = new Date();
+    since.setDate(since.getDate() - (workingDays * 2)); // generous buffer for weekends/gaps
+    const sinceStr = since.toISOString().slice(0, 10);
+
+    const { data, error } = await supabaseClient
+      .from("daily_entries")
+      .select("date, amount, entry_type")
+      .eq("employee_id", employeeId)
+      .eq("entry_type", "individual_increment")
+      .gte("date", sinceStr)
+      .lt("date", today); // excludes today on purpose
+    if (error) throw error;
+
+    const byDate = {};
+    for (const row of data) {
+      byDate[row.date] = (byDate[row.date] || 0) + row.amount;
+    }
+    const recentDates = Object.keys(byDate).sort().slice(-workingDays);
+    if (recentDates.length === 0) return null; // not enough history yet
+
+    const avg = recentDates.reduce((s, d) => s + byDate[d], 0) / recentDates.length;
+    return { average: avg, daysUsed: recentDates.length };
+  },
+
   async getDecliningEmployees(thresholdPercent = 20) {
     const since = new Date();
     since.setDate(since.getDate() - 28); // ~4 weeks of calendar days to cover 20 working days
