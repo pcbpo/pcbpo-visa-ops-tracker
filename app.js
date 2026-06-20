@@ -349,6 +349,9 @@ async function handleManualSet(fieldId, deptKey, rawValue) {
   }
 }
 
+// Draft state for shared-batch fields not yet submitted: { [fieldId]: [{deptId, amount}, ...] }
+let sharedDrafts = {};
+
 function renderSharedFields() {
   const container = document.getElementById("sharedFieldsContainer");
   const shared = employeeFields.filter((f) => f.entry_mode === "shared_batch");
@@ -358,34 +361,93 @@ function renderSharedFields() {
     const entry = sharedEntries[f.id];
     const card = document.createElement("div");
     card.className = "shared-card" + (entry ? " logged" : "");
+    card.dataset.sharedCard = f.id;
 
     if (entry) {
+      const deptRowsHtml = entry.rows
+        .map(
+          (r) => `
+          <div style="display:flex; justify-content:space-between; font-size:12.5px; padding:3px 0;">
+            <span>${r.client_dept_id ? deptName(r.client_dept_id) : "—"}</span>
+            <span style="font-weight:500;">${r.amount}</span>
+          </div>
+        `
+        )
+        .join("");
+
       card.innerHTML = `
         <div class="shared-top">
           <span class="field-label">${f.field_label}</span>
-          <span class="shared-value">${entry.amount}</span>
+          <span class="shared-value">${entry.total}</span>
         </div>
+        ${entry.rows.length > 1 ? `<div style="margin:6px 0; border-top:1px solid var(--border); padding-top:6px;">${deptRowsHtml}</div>` : ""}
         <div class="shared-meta">
-          Logged by ${entry.employees?.full_name || "—"}, ${formatTime(entry.created_at)}
+          Logged by ${entry.loggedBy}, ${formatTime(entry.loggedAt)}
           &nbsp;·&nbsp; <a data-correct="${f.id}">Request correction</a>
         </div>
       `;
     } else {
+      if (!sharedDrafts[f.id]) sharedDrafts[f.id] = [];
+      const draftRows = sharedDrafts[f.id];
+      const draftTotal = draftRows.reduce((s, r) => s + r.amount, 0);
+      const usedDeptIds = draftRows.map((r) => r.deptId);
+
+      const draftRowsHtml = draftRows
+        .map(
+          (r, idx) => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0;">
+            <span style="font-size:12.5px;">${deptName(r.deptId)}</span>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <input type="number" min="0" value="${r.amount}" style="width:56px; text-align:right;" data-draft-input="${f.id}" data-draft-idx="${idx}" />
+              <button class="btn-tap" data-draft-remove="${f.id}" data-draft-idx="${idx}">✕</button>
+            </div>
+          </div>
+        `
+        )
+        .join("");
+
       card.innerHTML = `
         <div class="shared-top">
           <span class="field-label">${f.field_label}</span>
+          ${draftRows.length > 0 ? `<span class="shared-value">${draftTotal}</span>` : ""}
         </div>
+        ${draftRows.length === 0 ? `<div style="font-size:12px;color:var(--gray); margin-bottom:8px;">Not yet logged today.</div>` : `<div style="margin:4px 0 8px;">${draftRowsHtml}</div>`}
         <div class="shared-entry-row">
-          <span style="font-size:12px;color:var(--gray);">Not yet logged today.</span>
-          ${f.requires_client_dept ? `<select data-shared-dept="${f.id}">${deptOptionsHtml()}</select>` : ""}
-          <input type="number" placeholder="e.g. 100" data-shared-input="${f.id}" />
-          <button class="btn-log" data-shared-submit="${f.id}">Log it</button>
+          ${f.requires_client_dept ? `<select data-shared-add-dept="${f.id}"><option value="">+ Add department…</option>${deptOptionsHtml(usedDeptIds)}</select>` : ""}
+          ${!f.requires_client_dept ? `<input type="number" placeholder="e.g. 100" data-shared-simple-input="${f.id}" />` : ""}
+          ${draftRows.length > 0 || !f.requires_client_dept ? `<button class="btn-log" data-shared-submit="${f.id}">Log it</button>` : ""}
         </div>
       `;
     }
     container.appendChild(card);
   });
 
+  container.querySelectorAll("[data-shared-add-dept]").forEach((select) => {
+    select.onchange = () => {
+      const fieldId = select.dataset.sharedAddDept;
+      const deptId = select.value;
+      if (!deptId) return;
+      sharedDrafts[fieldId] = sharedDrafts[fieldId] || [];
+      sharedDrafts[fieldId].push({ deptId, amount: 0 });
+      renderSharedFields();
+    };
+  });
+  container.querySelectorAll("[data-draft-input]").forEach((input) => {
+    input.onchange = () => {
+      const fieldId = input.dataset.draftInput;
+      const idx = parseInt(input.dataset.draftIdx, 10);
+      sharedDrafts[fieldId][idx].amount = Math.max(0, parseInt(input.value, 10) || 0);
+      renderSharedFields();
+    };
+  });
+  container.querySelectorAll("[data-draft-remove]").forEach((btn) => {
+    btn.onclick = () => {
+      const fieldId = btn.dataset.draftRemove;
+      const idx = parseInt(btn.dataset.draftIdx, 10);
+      sharedDrafts[fieldId].splice(idx, 1);
+      renderSharedFields();
+    };
+  });
   container.querySelectorAll("[data-shared-submit]").forEach((btn) => {
     btn.onclick = () => handleSharedSubmit(btn.dataset.sharedSubmit);
   });
@@ -395,20 +457,33 @@ function renderSharedFields() {
 }
 
 async function handleSharedSubmit(fieldId) {
-  const input = document.querySelector(`[data-shared-input="${fieldId}"]`);
-  const deptSelect = document.querySelector(`[data-shared-dept="${fieldId}"]`);
-  const amount = parseInt(input.value, 10);
-  if (!amount || amount <= 0) {
-    alert("Enter a number greater than 0.");
-    return;
+  const field = employeeFields.find((f) => f.id === fieldId);
+  let entries;
+
+  if (field.requires_client_dept) {
+    const draftRows = sharedDrafts[fieldId] || [];
+    if (draftRows.length === 0) {
+      alert("Add at least one department and amount.");
+      return;
+    }
+    if (draftRows.some((r) => !r.amount || r.amount <= 0)) {
+      alert("Every department needs an amount greater than 0.");
+      return;
+    }
+    entries = draftRows.map((r) => ({ clientDeptId: r.deptId, amount: r.amount }));
+  } else {
+    const input = document.querySelector(`[data-shared-simple-input="${fieldId}"]`);
+    const amount = parseInt(input.value, 10);
+    if (!amount || amount <= 0) {
+      alert("Enter a number greater than 0.");
+      return;
+    }
+    entries = [{ clientDeptId: null, amount }];
   }
+
   try {
-    await Data.logSharedBatch(
-      Auth.currentEmployee.id,
-      fieldId,
-      deptSelect ? deptSelect.value : null,
-      amount
-    );
+    await Data.logSharedBatch(Auth.currentEmployee.id, fieldId, entries);
+    delete sharedDrafts[fieldId];
     sharedEntries = await Data.getTodaySharedEntries();
     renderSharedFields();
   } catch (e) {
@@ -420,23 +495,36 @@ async function handleSharedSubmit(fieldId) {
 
 async function handleSharedCorrection(fieldId) {
   const existing = sharedEntries[fieldId];
-  const newVal = prompt(
-    `Current value: ${existing.amount}, logged by ${existing.employees?.full_name}.\nEnter corrected number:`
-  );
+  const currentBreakdown = existing.rows
+    .map((r) => `${r.client_dept_id ? deptName(r.client_dept_id) : "—"}: ${r.amount}`)
+    .join("\n");
+  const instructions =
+    `Current breakdown:\n${currentBreakdown}\n\n` +
+    `Enter the corrected breakdown, one "Department: amount" per line ` +
+    `(use the exact department names shown above). Example:\n` +
+    `BB - HT SKYPULSE: 12\nKR -KRI: 8`;
+  const newVal = prompt(instructions);
   if (newVal === null) return;
-  const amount = parseInt(newVal, 10);
-  if (!amount || amount <= 0) {
-    alert("Enter a valid number.");
+
+  const lines = newVal.split("\n").map((l) => l.trim()).filter(Boolean);
+  const entries = [];
+  for (const line of lines) {
+    const [namePart, amountPart] = line.split(":").map((s) => s.trim());
+    const dept = clientDepartments.find((d) => d.name === namePart);
+    const amount = parseInt(amountPart, 10);
+    if (!dept || !amount || amount <= 0) {
+      alert(`Couldn't understand the line: "${line}". Correction cancelled — nothing was changed.`);
+      return;
+    }
+    entries.push({ clientDeptId: dept.id, amount });
+  }
+  if (entries.length === 0) {
+    alert("No valid lines entered. Correction cancelled.");
     return;
   }
+
   try {
-    await Data.correctSharedBatch(
-      Auth.currentEmployee.id,
-      fieldId,
-      existing.client_dept_id || null,
-      amount,
-      existing.id
-    );
+    await Data.correctSharedBatch(Auth.currentEmployee.id, fieldId, entries, existing.rows[0].id);
     sharedEntries = await Data.getTodaySharedEntries();
     renderSharedFields();
   } catch (e) {
