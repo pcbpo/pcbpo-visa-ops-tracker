@@ -1,0 +1,383 @@
+// PCBPO Visa Operations Tracker — App logic
+
+const LOGO_URL = "logo.png"; // see note in README — drop your logo file here
+
+let clientDepartments = [];
+let employeeFields = [];
+let sharedEntries = {};
+let isSignupMode = false;
+
+// ---------- bootstrap ----------
+
+window.addEventListener("DOMContentLoaded", async () => {
+  document.getElementById("navLogo").src = LOGO_URL;
+  document.getElementById("loginLogo").src = LOGO_URL;
+
+  wireLoginEvents();
+  wireStaffEvents();
+
+  const session = await Auth.getSession();
+  if (session) {
+    try {
+      await Auth.loadEmployeeProfile(session.user.id);
+      await Auth.recordInTimeIfNeeded(session.user.id);
+      await showStaffScreen();
+    } catch (e) {
+      showLoginError(e.message);
+      await supabaseClient.auth.signOut();
+    }
+  }
+});
+
+// ---------- login screen ----------
+
+function wireLoginEvents() {
+  document.getElementById("toggleToSignup").querySelector("a").onclick = () => setSignupMode(true);
+  document.getElementById("toggleToLogin").querySelector("a").onclick = () => setSignupMode(false);
+
+  document.getElementById("loginBtn").onclick = handleLogin;
+  document.getElementById("signupBtn").onclick = handleSignup;
+  document.getElementById("navLogoutBtn").onclick = handleLogout;
+}
+
+function setSignupMode(on) {
+  isSignupMode = on;
+  document.getElementById("signupNameRow").classList.toggle("hidden", !on);
+  document.getElementById("loginBtn").classList.toggle("hidden", on);
+  document.getElementById("signupBtn").classList.toggle("hidden", !on);
+  document.getElementById("toggleToSignup").classList.toggle("hidden", on);
+  document.getElementById("toggleToLogin").classList.toggle("hidden", !on);
+  hideLoginError();
+}
+
+function showLoginError(msg) {
+  const el = document.getElementById("loginError");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+function hideLoginError() {
+  document.getElementById("loginError").classList.add("hidden");
+}
+
+async function handleLogin() {
+  hideLoginError();
+  const email = document.getElementById("emailInput").value.trim();
+  const password = document.getElementById("passwordInput").value;
+  if (!email || !password) {
+    showLoginError("Enter your office email and password.");
+    return;
+  }
+  try {
+    await Auth.signIn(email, password);
+    await showStaffScreen();
+  } catch (e) {
+    showLoginError(e.message || "Couldn't log in. Check your email and password.");
+  }
+}
+
+async function handleSignup() {
+  hideLoginError();
+  const name = document.getElementById("signupName").value.trim();
+  const email = document.getElementById("emailInput").value.trim();
+  const password = document.getElementById("passwordInput").value;
+  if (!name || !email || !password) {
+    showLoginError("Fill in your name, office email, and a password.");
+    return;
+  }
+  if (password.length < 6) {
+    showLoginError("Password should be at least 6 characters.");
+    return;
+  }
+  try {
+    await Auth.signUp(email, password, name);
+    showLoginError(
+      "Account created. Ask your manager to link this email to your staff record, then log in."
+    );
+    setSignupMode(false);
+  } catch (e) {
+    showLoginError(e.message || "Couldn't create account.");
+  }
+}
+
+async function handleLogout() {
+  await Auth.signOut();
+  document.getElementById("staffScreen").classList.add("hidden");
+  document.getElementById("summaryScreen").classList.add("hidden");
+  document.getElementById("navUserBox").classList.add("hidden");
+  document.getElementById("loginScreen").classList.remove("hidden");
+  document.getElementById("emailInput").value = "";
+  document.getElementById("passwordInput").value = "";
+}
+
+// ---------- staff entry screen ----------
+
+async function showStaffScreen() {
+  document.getElementById("loginScreen").classList.add("hidden");
+  document.getElementById("staffScreen").classList.remove("hidden");
+  document.getElementById("navUserBox").classList.remove("hidden");
+  document.getElementById("navUserName").textContent = Auth.currentEmployee.full_name;
+
+  document.getElementById("staffName").textContent = Auth.currentEmployee.full_name;
+  document.getElementById("staffRole").textContent = Auth.currentEmployee.role;
+
+  const attendance = await Data.getTodayAttendance(Auth.currentEmployee.id);
+  document.getElementById("staffInTime").textContent = attendance?.in_time
+    ? formatTime(attendance.in_time)
+    : "—";
+
+  clientDepartments = await Data.getClientDepartments();
+  employeeFields = await Data.getFieldsForEmployee(Auth.currentEmployee);
+  sharedEntries = await Data.getTodaySharedEntries();
+  const todayTotals = await Data.getTodayTotals(Auth.currentEmployee.id);
+
+  renderIndividualFields(todayTotals);
+  renderSharedFields();
+  updateEntryCount(todayTotals);
+}
+
+function deptOptionsHtml() {
+  return clientDepartments.map((d) => `<option value="${d.id}">${d.name}</option>`).join("");
+}
+
+function renderIndividualFields(todayTotals) {
+  const container = document.getElementById("individualFieldsContainer");
+  const individual = employeeFields.filter((f) => f.entry_mode === "individual");
+
+  if (individual.length === 0) {
+    container.innerHTML = `<p style="font-size:13px;color:var(--gray);">No individual fields assigned. Contact your manager if this looks wrong.</p>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="section-label">Your individual work today</div>`;
+
+  const groups = {};
+  individual.forEach((f) => {
+    const g = f.field_group || "General";
+    groups[g] = groups[g] || [];
+    groups[g].push(f);
+  });
+
+  for (const [groupName, fields] of Object.entries(groups)) {
+    const groupDiv = document.createElement("div");
+    groupDiv.className = "field-group";
+    groupDiv.innerHTML = `<div class="group-label">${groupName}</div>`;
+
+    fields.forEach((f) => {
+      const current = todayTotals[f.id] || 0;
+      const row = document.createElement("div");
+      row.className = "field-card";
+      row.innerHTML = `
+        <span class="field-label">${f.field_label}</span>
+        <div class="field-controls">
+          ${f.requires_client_dept ? `<select class="dept-select" data-field="${f.id}">${deptOptionsHtml()}</select>` : ""}
+          <input type="number" min="0" value="${current}" data-field-input="${f.id}" />
+          <button class="btn-tap" data-bump="${f.id}" data-amount="1">+1</button>
+          <button class="btn-tap" data-bump="${f.id}" data-amount="5">+5</button>
+        </div>
+      `;
+      groupDiv.appendChild(row);
+    });
+    container.appendChild(groupDiv);
+  }
+
+  container.querySelectorAll("[data-bump]").forEach((btn) => {
+    btn.onclick = () => handleBump(btn.dataset.bump, parseInt(btn.dataset.amount, 10));
+  });
+  container.querySelectorAll("[data-field-input]").forEach((input) => {
+    input.onchange = () => handleManualSet(input.dataset.fieldInput, input.value);
+  });
+}
+
+function getSelectedDept(fieldId) {
+  const select = document.querySelector(`select[data-field="${fieldId}"]`);
+  return select ? select.value : null;
+}
+
+async function handleBump(fieldId, amount) {
+  const deptId = getSelectedDept(fieldId);
+  try {
+    await Data.logIncrement(Auth.currentEmployee.id, fieldId, deptId, amount);
+    const input = document.querySelector(`[data-field-input="${fieldId}"]`);
+    input.value = parseInt(input.value || "0", 10) + amount;
+    refreshEntryCount();
+  } catch (e) {
+    alert("Couldn't save: " + e.message);
+  }
+}
+
+async function handleManualSet(fieldId, rawValue) {
+  const amount = Math.max(0, parseInt(rawValue, 10) || 0);
+  const deptId = getSelectedDept(fieldId);
+  try {
+    await Data.setManualValue(Auth.currentEmployee.id, fieldId, deptId, amount);
+    refreshEntryCount();
+  } catch (e) {
+    alert("Couldn't save: " + e.message);
+  }
+}
+
+function renderSharedFields() {
+  const container = document.getElementById("sharedFieldsContainer");
+  const shared = employeeFields.filter((f) => f.entry_mode === "shared_batch");
+  container.innerHTML = "";
+
+  shared.forEach((f) => {
+    const entry = sharedEntries[f.id];
+    const card = document.createElement("div");
+    card.className = "shared-card" + (entry ? " logged" : "");
+
+    if (entry) {
+      card.innerHTML = `
+        <div class="shared-top">
+          <span class="field-label">${f.field_label}</span>
+          <span class="shared-value">${entry.amount}</span>
+        </div>
+        <div class="shared-meta">
+          Logged by ${entry.employees?.full_name || "—"}, ${formatTime(entry.created_at)}
+          &nbsp;·&nbsp; <a data-correct="${f.id}">Request correction</a>
+        </div>
+      `;
+    } else {
+      card.innerHTML = `
+        <div class="shared-top">
+          <span class="field-label">${f.field_label}</span>
+        </div>
+        <div class="shared-entry-row">
+          <span style="font-size:12px;color:var(--gray);">Not yet logged today.</span>
+          ${f.requires_client_dept ? `<select data-shared-dept="${f.id}">${deptOptionsHtml()}</select>` : ""}
+          <input type="number" placeholder="e.g. 100" data-shared-input="${f.id}" />
+          <button class="btn-log" data-shared-submit="${f.id}">Log it</button>
+        </div>
+      `;
+    }
+    container.appendChild(card);
+  });
+
+  container.querySelectorAll("[data-shared-submit]").forEach((btn) => {
+    btn.onclick = () => handleSharedSubmit(btn.dataset.sharedSubmit);
+  });
+  container.querySelectorAll("[data-correct]").forEach((link) => {
+    link.onclick = () => handleSharedCorrection(link.dataset.correct);
+  });
+}
+
+async function handleSharedSubmit(fieldId) {
+  const input = document.querySelector(`[data-shared-input="${fieldId}"]`);
+  const deptSelect = document.querySelector(`[data-shared-dept="${fieldId}"]`);
+  const amount = parseInt(input.value, 10);
+  if (!amount || amount <= 0) {
+    alert("Enter a number greater than 0.");
+    return;
+  }
+  try {
+    await Data.logSharedBatch(
+      Auth.currentEmployee.id,
+      fieldId,
+      deptSelect ? deptSelect.value : null,
+      amount
+    );
+    sharedEntries = await Data.getTodaySharedEntries();
+    renderSharedFields();
+  } catch (e) {
+    alert(e.message);
+    sharedEntries = await Data.getTodaySharedEntries();
+    renderSharedFields();
+  }
+}
+
+async function handleSharedCorrection(fieldId) {
+  const existing = sharedEntries[fieldId];
+  const newVal = prompt(
+    `Current value: ${existing.amount}, logged by ${existing.employees?.full_name}.\nEnter corrected number:`
+  );
+  if (newVal === null) return;
+  const amount = parseInt(newVal, 10);
+  if (!amount || amount <= 0) {
+    alert("Enter a valid number.");
+    return;
+  }
+  try {
+    await Data.correctSharedBatch(
+      Auth.currentEmployee.id,
+      fieldId,
+      existing.client_dept_id || null,
+      amount,
+      existing.id
+    );
+    sharedEntries = await Data.getTodaySharedEntries();
+    renderSharedFields();
+  } catch (e) {
+    alert("Couldn't save correction: " + e.message);
+  }
+}
+
+function updateEntryCount(todayTotals) {
+  const total = Object.values(todayTotals).reduce((s, v) => s + v, 0);
+  document.getElementById("entryCount").textContent = `${total} total entries logged today`;
+}
+
+async function refreshEntryCount() {
+  const totals = await Data.getTodayTotals(Auth.currentEmployee.id);
+  updateEntryCount(totals);
+}
+
+// ---------- logout summary ----------
+
+function wireStaffEvents() {
+  document.getElementById("logOffBtn").onclick = handleLogOffWithSummary;
+  document.getElementById("backToEntryBtn").onclick = () => {
+    document.getElementById("summaryScreen").classList.add("hidden");
+    document.getElementById("staffScreen").classList.remove("hidden");
+  };
+}
+
+async function handleLogOffWithSummary() {
+  const note = document.getElementById("noteBox").value.trim();
+  if (note) {
+    try {
+      await Data.saveNote(Auth.currentEmployee.id, note);
+    } catch (e) {
+      console.error("Couldn't save note:", e);
+    }
+  }
+
+  const todayTotals = await Data.getTodayTotals(Auth.currentEmployee.id);
+  const attendance = await Data.getTodayAttendance(Auth.currentEmployee.id);
+
+  await Auth.recordOutTime(Auth.currentEmployee.id);
+
+  document.getElementById("summaryGreeting").textContent =
+    `Nice work today, ${Auth.currentEmployee.full_name}.`;
+  const inT = attendance?.in_time ? formatTime(attendance.in_time) : "—";
+  const outT = formatTime(new Date().toISOString());
+  document.getElementById("summaryTimes").textContent = `In: ${inT}  ·  Out: ${outT}`;
+
+  const rowsContainer = document.getElementById("summaryRows");
+  rowsContainer.innerHTML = "";
+  const individual = employeeFields.filter((f) => f.entry_mode === "individual");
+  individual.forEach((f) => {
+    const val = todayTotals[f.id] || 0;
+    const row = document.createElement("div");
+    row.className = "summary-row";
+    row.innerHTML = `<span>${f.field_label}</span><span style="font-weight:500;">${val}</span>`;
+    rowsContainer.appendChild(row);
+  });
+
+  const noteBox = document.getElementById("summaryNoteBox");
+  if (note) {
+    noteBox.textContent = "Note: " + note;
+    noteBox.classList.remove("hidden");
+  } else {
+    noteBox.classList.add("hidden");
+  }
+
+  document.getElementById("staffScreen").classList.add("hidden");
+  document.getElementById("summaryScreen").classList.remove("hidden");
+}
+
+// ---------- helpers ----------
+
+function formatTime(isoString) {
+  const d = new Date(isoString);
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}

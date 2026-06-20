@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PCBPO Visa Operations Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --teal: #0F6E56;
+    --teal-light: #E1F5EE;
+    --coral: #D85A30;
+    --amber: #BA7517;
+    --gray: #5F5E5A;
+    --border: #E4E2D9;
+    --bg: #FAF9F5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: #1a1a1a;
+  }
+  .hidden { display: none !important; }
+
+  /* ---------- Nav ---------- */
+  .navbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+    background: white; position: sticky; top: 0; z-index: 10;
+  }
+  .logo-wrap { display: flex; align-items: center; gap: 10px; }
+  .logo-wrap img { width: 36px; height: 36px; object-fit: contain; }
+  .logo-text-main { font-weight: 700; font-size: 15px; }
+  .logo-text-sub { font-size: 10px; color: var(--gray); letter-spacing: 0.5px; }
+  .nav-user { font-size: 12px; color: var(--gray); display: flex; align-items: center; gap: 12px; }
+  .nav-user button {
+    border: 1px solid var(--border); background: white; border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+  }
+
+  /* ---------- Login ---------- */
+  .login-wrap {
+    max-width: 380px; margin: 80px auto; padding: 0 24px;
+  }
+  .login-card {
+    border: 1px solid var(--border); border-radius: 14px; padding: 28px;
+    background: white; text-align: center;
+  }
+  .login-card img { width: 56px; height: 56px; object-fit: contain; margin-bottom: 10px; }
+  .login-card h1 { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
+  .login-card p.sub { font-size: 12.5px; color: var(--gray); margin: 0 0 20px; }
+  .field-row { text-align: left; margin-bottom: 12px; }
+  .field-row label { font-size: 12px; color: var(--gray); display: block; margin-bottom: 4px; }
+  .field-row input {
+    width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border);
+    font-size: 13.5px; font-family: inherit;
+  }
+  .btn-primary {
+    width: 100%; background: var(--teal); color: white; border: none; border-radius: 8px;
+    padding: 10px; font-size: 13.5px; font-weight: 500; cursor: pointer; margin-top: 6px;
+  }
+  .btn-secondary {
+    width: 100%; background: white; color: #1a1a1a; border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px; font-size: 13px; font-weight: 500; cursor: pointer; margin-top: 8px;
+  }
+  .login-error {
+    background: #FDEAE4; color: #8a2c10; font-size: 12.5px; border-radius: 8px;
+    padding: 9px 12px; margin-bottom: 14px; text-align: left;
+  }
+  .login-toggle { font-size: 12px; color: var(--gray); margin-top: 14px; }
+  .login-toggle a { color: var(--teal); cursor: pointer; font-weight: 500; }
+
+  /* ---------- Staff entry screen ---------- */
+  .staff-wrap { max-width: 640px; margin: 0 auto; padding: 28px 24px 64px; }
+  .staff-header {
+    display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;
+  }
+  .staff-name { font-size: 16px; font-weight: 500; }
+  .staff-role { font-size: 12px; color: var(--gray); }
+  .clock-box { text-align: right; }
+  .clock-label { font-size: 12px; color: var(--gray); }
+  .clock-value { font-size: 13px; font-weight: 500; }
+
+  .section-label {
+    font-size: 11.5px; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px;
+    margin: 24px 0 8px;
+  }
+  .group-label { font-size: 11.5px; color: #B4B2A9; margin-bottom: 6px; font-weight: 500; }
+  .field-group { margin-bottom: 14px; }
+
+  .field-card {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border: 1px solid var(--border); border-radius: 9px;
+    margin-bottom: 6px; background: white; gap: 10px; flex-wrap: wrap;
+  }
+  .field-label { font-size: 13.5px; flex: 1; min-width: 160px; }
+  .field-controls { display: flex; align-items: center; gap: 10px; }
+  .field-controls input[type=number] {
+    width: 56px; font-size: 16px; font-weight: 500; text-align: right;
+    padding: 5px 6px; border-radius: 6px; border: 1px solid var(--border); font-family: inherit;
+  }
+  .btn-tap {
+    border: 1px solid var(--border); background: white; border-radius: 6px;
+    padding: 5px 9px; font-size: 12px; font-weight: 500; cursor: pointer;
+  }
+  .dept-select {
+    font-size: 12px; padding: 5px 7px; border-radius: 6px; border: 1px solid var(--border);
+    font-family: inherit; max-width: 130px;
+  }
+
+  .shared-card {
+    border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px;
+    margin-bottom: 6px; background: white;
+  }
+  .shared-card.logged { background: #FAF9F5; }
+  .shared-top { display: flex; justify-content: space-between; align-items: center; }
+  .shared-value { font-size: 17px; font-weight: 500; }
+  .shared-meta { font-size: 11.5px; color: var(--gray); margin-top: 4px; }
+  .shared-meta a { color: var(--teal); cursor: pointer; font-weight: 500; }
+  .shared-entry-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+  .shared-entry-row input { width: 70px; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); }
+  .shared-entry-row select { font-size: 12.5px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); }
+  .btn-log {
+    background: var(--teal); color: white; border: none; border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; font-weight: 500; cursor: pointer;
+  }
+
+  textarea.note-box {
+    width: 100%; min-height: 56px; font-size: 13px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--border); font-family: inherit; resize: vertical; margin-top: 26px;
+  }
+  .bottom-bar {
+    display: flex; justify-content: space-between; align-items: center; margin-top: 18px;
+  }
+  .entry-count { font-size: 12px; color: var(--gray); }
+
+  /* ---------- Logout summary ---------- */
+  .summary-wrap { max-width: 480px; margin: 60px auto; padding: 0 24px; }
+  .summary-card { border: 1px solid var(--border); border-radius: 14px; padding: 28px; background: white; }
+  .summary-tag { font-size: 13px; color: var(--teal); font-weight: 500; margin-bottom: 4px; }
+  .summary-card h2 { font-size: 19px; font-weight: 500; margin: 0 0 4px; }
+  .summary-meta { font-size: 13px; color: var(--gray); margin-bottom: 20px; }
+  .summary-section-label {
+    font-size: 13px; font-weight: 500; margin-bottom: 10px; color: var(--gray);
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .summary-row { display: flex; justify-content: space-between; font-size: 13.5px; margin-bottom: 8px; }
+  .summary-note {
+    font-size: 12.5px; color: var(--gray); border-top: 1px solid var(--border);
+    padding-top: 12px; margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div class="navbar">
+  <div class="logo-wrap">
+    <img src="" id="navLogo" alt="Port City BPO logo" />
+    <div>
+      <div class="logo-text-main">Port City BPO</div>
+      <div class="logo-text-sub">VISA OPERATIONS TRACKER</div>
+    </div>
+  </div>
+  <div class="nav-user hidden" id="navUserBox">
+    <span id="navUserName"></span>
+    <button id="navLogoutBtn">Log off</button>
+  </div>
+</div>
+
+<!-- LOGIN -->
+<div id="loginScreen" class="login-wrap">
+  <div class="login-card">
+    <img src="" id="loginLogo" alt="Port City BPO logo" />
+    <h1>Visa Operations Tracker</h1>
+    <p class="sub">Sign in with your office email</p>
+
+    <div id="loginError" class="login-error hidden"></div>
+
+    <div id="signupNameRow" class="field-row hidden">
+      <label>Full name</label>
+      <input type="text" id="signupName" placeholder="As your manager has it on record" />
+    </div>
+    <div class="field-row">
+      <label>Office email</label>
+      <input type="email" id="emailInput" placeholder="you@portcitybpo.lk" />
+    </div>
+    <div class="field-row">
+      <label>Password</label>
+      <input type="password" id="passwordInput" placeholder="••••••••" />
+    </div>
+
+    <button class="btn-primary" id="loginBtn">Log in</button>
+    <button class="btn-secondary hidden" id="signupBtn">Create account</button>
+
+    <div class="login-toggle">
+      <span id="toggleToSignup">First time here? <a>Create an account</a></span>
+      <span id="toggleToLogin" class="hidden">Already have an account? <a>Log in</a></span>
+    </div>
+  </div>
+</div>
+
+<!-- STAFF ENTRY SCREEN -->
+<div id="staffScreen" class="staff-wrap hidden">
+  <div class="staff-header">
+    <div>
+      <div class="staff-name" id="staffName"></div>
+      <div class="staff-role" id="staffRole"></div>
+    </div>
+    <div class="clock-box">
+      <div class="clock-label">Logged in</div>
+      <div class="clock-value" id="staffInTime">—</div>
+    </div>
+  </div>
+
+  <div id="individualFieldsContainer"></div>
+
+  <div class="section-label">Team-shared today — one entry covers everyone</div>
+  <div id="sharedFieldsContainer"></div>
+
+  <textarea class="note-box" id="noteBox" placeholder="Add a note for today (optional) — e.g. delays, system downtime"></textarea>
+
+  <div class="bottom-bar">
+    <span class="entry-count" id="entryCount">0 total entries logged today</span>
+    <button class="btn-primary" style="width:auto;" id="logOffBtn">Log off &amp; view summary</button>
+  </div>
+</div>
+
+<!-- LOGOUT SUMMARY -->
+<div id="summaryScreen" class="summary-wrap hidden">
+  <div class="summary-card">
+    <div class="summary-tag">Logged off</div>
+    <h2 id="summaryGreeting"></h2>
+    <div class="summary-meta" id="summaryTimes"></div>
+    <div class="summary-section-label">Today's contribution</div>
+    <div id="summaryRows"></div>
+    <div class="summary-note hidden" id="summaryNoteBox"></div>
+    <button class="btn-secondary" id="backToEntryBtn">Back to entry screen</button>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="auth.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
