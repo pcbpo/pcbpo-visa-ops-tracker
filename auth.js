@@ -33,12 +33,14 @@ const Auth = {
     if (error) throw error;
 
     await this.loadEmployeeProfile(data.user.id);
-    await this.recordInTimeIfNeeded(data.user.id);
+    // Note: in-time is NOT recorded here. Managers don't clock in/out
+    // the same way frontline staff do, so the caller (app.js) decides
+    // whether to call recordInTimeIfNeeded based on the employee's role.
     return data;
   },
 
   async signOut() {
-    if (this.currentEmployee) {
+    if (this.currentEmployee && !this.currentEmployee.is_manager) {
       await this.recordOutTime(this.currentEmployee.id);
     }
     await supabaseClient.auth.signOut();
