@@ -157,6 +157,36 @@ const Data = {
     return totals;
   },
 
+  // Same data, but broken down per client department, for fields where
+  // a single day's work spans multiple departments (e.g. a Port CALM
+  // batch covering several clients at once). Returns:
+  // { [field_id]: { [client_dept_id]: total, ... } }
+  // A manual-set for a given (field, department) pair replaces just
+  // that department's number, not the whole field's total across
+  // departments — each department is tracked independently.
+  async getTodayTotalsByDepartment(employeeId) {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabaseClient
+      .from("daily_entries")
+      .select("field_id, client_dept_id, amount, entry_type, created_at")
+      .eq("employee_id", employeeId)
+      .eq("date", today)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    const totals = {}; // field_id -> dept_id (or '__none__') -> amount
+    for (const row of data) {
+      const deptKey = row.client_dept_id || "__none__";
+      totals[row.field_id] = totals[row.field_id] || {};
+      if (row.entry_type === "individual_manual_set") {
+        totals[row.field_id][deptKey] = row.amount;
+      } else if (row.entry_type === "individual_increment") {
+        totals[row.field_id][deptKey] = (totals[row.field_id][deptKey] || 0) + row.amount;
+      }
+    }
+    return totals;
+  },
+
   // Shared-batch fields: returns today's single entry per field (if any),
   // visible to the whole team regardless of who's logged in.
   async getTodaySharedEntries() {
