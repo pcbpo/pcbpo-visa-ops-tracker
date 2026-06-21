@@ -362,6 +362,7 @@ async function handleBump(fieldId, deptKey, amount) {
     if (input) input.value = (parseInt(input.value, 10) || 0) + amount;
     updateFieldCardSubtotal(fieldId);
     refreshEntryCount();
+    refreshBacklogIfRelevant(fieldId);
   } catch (e) {
     alert("Couldn't save: " + e.message);
   }
@@ -374,9 +375,31 @@ async function handleManualSet(fieldId, deptKey, rawValue) {
     await Data.setManualValue(Auth.currentEmployee.id, fieldId, deptId, amount);
     updateFieldCardSubtotal(fieldId);
     refreshEntryCount();
+    refreshBacklogIfRelevant(fieldId);
   } catch (e) {
     alert("Couldn't save: " + e.message);
   }
+}
+
+// Backlog only needs to be recalculated when the field just touched is
+// part of a received<->reviewed pair — most fields (rejected, work
+// orders, etc.) have nothing to do with backlog, so this avoids an
+// extra database query on every single tap. Debounced so rapid +1
+// tapping doesn't fire a query per click — settles 600ms after the
+// last relevant tap.
+let backlogRefreshTimer = null;
+function refreshBacklogIfRelevant(fieldId) {
+  const field = employeeFields.find((f) => f.id === fieldId);
+  if (!field) return;
+  const isBacklogRelevant =
+    !!field.backlog_pair_field_key ||
+    employeeFields.some((f) => f.backlog_pair_field_key === field.field_key);
+  if (!isBacklogRelevant) return;
+
+  clearTimeout(backlogRefreshTimer);
+  backlogRefreshTimer = setTimeout(() => {
+    renderBacklog();
+  }, 600);
 }
 
 // Draft state for shared-batch fields not yet submitted: { [fieldId]: [{deptId, amount}, ...] }
