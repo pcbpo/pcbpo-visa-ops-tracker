@@ -798,27 +798,32 @@ async function loadManagerToday() {
   }
 
   const tbody = document.getElementById("mgrStaffTableBody");
-  tbody.innerHTML = `<tr><td colspan="4" class="muted">Loading staff…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="5" class="muted">Loading staff…</td></tr>`;
   try {
-    const staff = await Data.getAllStaffSnapshot();
+    const [staff, backlogTotals] = await Promise.all([
+      Data.getAllStaffSnapshot(),
+      Data.getBacklogTotalsForAllStaff(),
+    ]);
     if (staff.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="4" class="muted">No active staff yet.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">No active staff yet.</td></tr>`;
       return;
     }
     tbody.innerHTML = staff
-      .map(
-        (s) => `
+      .map((s) => {
+        const backlog = backlogTotals[s.id] || 0;
+        return `
         <tr>
           <td class="name">${s.full_name}</td>
           <td class="muted">${s.in_time ? formatTime(s.in_time) : "—"}</td>
           <td class="muted">${s.out_time ? formatTime(s.out_time) : "—"}</td>
           <td>${s.today_total}</td>
+          <td>${backlog > 0 ? `<span style="color:#BA7517; font-weight:500;">${backlog}</span>` : `<span class="muted">0</span>`}</td>
         </tr>
-      `
-      )
+      `;
+      })
       .join("");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="muted">Couldn't load staff: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">Couldn't load staff: ${e.message}</td></tr>`;
   }
 }
 
