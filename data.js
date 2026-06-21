@@ -133,6 +133,62 @@ const Data = {
     );
   },
 
+  // Running backlog per person: for each "received" field that has a
+  // backlog_pair_field_key set, computes (all-time received total) −
+  // (all-time reviewed/processed total). This is NOT reset daily — it's
+  // the actual outstanding pile, however many days it took to build up.
+  // Floored at 0 (more reviewed than received overall just means caught
+  // up, not a negative backlog).
+  // `employeeFields` should be the array already returned by
+  // getFieldsForEmployee for this person (avoids re-fetching).
+  async getBacklogForEmployee(employeeId, employeeFields) {
+    const pairedFields = employeeFields.filter((f) => f.backlog_pair_field_key);
+    if (pairedFields.length === 0) return [];
+
+    const fieldKeyToId = {};
+    employeeFields.forEach((f) => {
+      fieldKeyToId[f.field_key] = f.id;
+    });
+
+    const relevantFieldIds = [];
+    pairedFields.forEach((f) => {
+      relevantFieldIds.push(f.id);
+      const pairedId = fieldKeyToId[f.backlog_pair_field_key];
+      if (pairedId) relevantFieldIds.push(pairedId);
+    });
+
+    const { data, error } = await supabaseClient
+      .from("daily_entries")
+      .select("field_id, amount, entry_type")
+      .eq("employee_id", employeeId)
+      .in("field_id", relevantFieldIds)
+      .in("entry_type", ["individual_increment", "individual_manual_set"]);
+    if (error) throw error;
+
+    // Simplification: manual_set entries are summed as contributions
+    // rather than treated as "replace the running total," since for an
+    // all-time backlog (vs a single day's total) there's no clean way
+    // to know which manual_set superseded which without per-day
+    // bucketing. This is rare in practice (manual entry is the
+    // exception, not the rule), but flagging it as a known approximation.
+    const totalsByFieldId = {};
+    for (const row of data) {
+      totalsByFieldId[row.field_id] = (totalsByFieldId[row.field_id] || 0) + row.amount;
+    }
+
+    return pairedFields.map((f) => {
+      const receivedTotal = totalsByFieldId[f.id] || 0;
+      const pairedId = fieldKeyToId[f.backlog_pair_field_key];
+      const reviewedTotal = pairedId ? totalsByFieldId[pairedId] || 0 : 0;
+      return {
+        receivedFieldLabel: f.field_label,
+        receivedTotal,
+        reviewedTotal,
+        backlog: Math.max(0, receivedTotal - reviewedTotal),
+      };
+    });
+  },
+
   // Sum of an employee's entries for one field, today, accounting for
   // increments AND the most recent manual_set (a manual set replaces
   // everything logged before it, not adds to it).
