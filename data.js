@@ -159,32 +159,55 @@ const Data = {
 
     const { data, error } = await supabaseClient
       .from("daily_entries")
-      .select("field_id, amount, entry_type")
+      .select("field_id, client_dept_id, amount, entry_type, client_departments(name)")
       .eq("employee_id", employeeId)
       .in("field_id", relevantFieldIds)
       .in("entry_type", ["individual_increment", "individual_manual_set"]);
     if (error) throw error;
 
-    // Simplification: manual_set entries are summed as contributions
-    // rather than treated as "replace the running total," since for an
-    // all-time backlog (vs a single day's total) there's no clean way
-    // to know which manual_set superseded which without per-day
-    // bucketing. This is rare in practice (manual entry is the
-    // exception, not the rule), but flagging it as a known approximation.
-    const totalsByFieldId = {};
+    // Bucket by (field_id, department) instead of just field_id, so
+    // backlog can be broken out per client department, not just an
+    // overall number. Same manual_set simplification as before — see
+    // note below — applies per department bucket too.
+    const totalsByFieldAndDept = {}; // field_id -> dept_key -> amount
+    const deptNameByKey = {};
     for (const row of data) {
-      totalsByFieldId[row.field_id] = (totalsByFieldId[row.field_id] || 0) + row.amount;
+      const deptKey = row.client_dept_id || "__none__";
+      deptNameByKey[deptKey] = row.client_departments?.name || "No department";
+      totalsByFieldAndDept[row.field_id] = totalsByFieldAndDept[row.field_id] || {};
+      totalsByFieldAndDept[row.field_id][deptKey] =
+        (totalsByFieldAndDept[row.field_id][deptKey] || 0) + row.amount;
     }
 
     return pairedFields.map((f) => {
-      const receivedTotal = totalsByFieldId[f.id] || 0;
       const pairedId = fieldKeyToId[f.backlog_pair_field_key];
-      const reviewedTotal = pairedId ? totalsByFieldId[pairedId] || 0 : 0;
+      const receivedByDept = totalsByFieldAndDept[f.id] || {};
+      const reviewedByDept = pairedId ? totalsByFieldAndDept[pairedId] || {} : {};
+
+      const allDeptKeys = new Set([...Object.keys(receivedByDept), ...Object.keys(reviewedByDept)]);
+      const byDepartment = [...allDeptKeys]
+        .map((deptKey) => {
+          const received = receivedByDept[deptKey] || 0;
+          const reviewed = reviewedByDept[deptKey] || 0;
+          return {
+            deptName: deptNameByKey[deptKey] || "No department",
+            received,
+            reviewed,
+            backlog: Math.max(0, received - reviewed),
+          };
+        })
+        .filter((d) => d.backlog > 0)
+        .sort((a, b) => b.backlog - a.backlog);
+
+      const receivedTotal = Object.values(receivedByDept).reduce((s, v) => s + v, 0);
+      const reviewedTotal = Object.values(reviewedByDept).reduce((s, v) => s + v, 0);
+
       return {
         receivedFieldLabel: f.field_label,
         receivedTotal,
         reviewedTotal,
         backlog: Math.max(0, receivedTotal - reviewedTotal),
+        byDepartment, // already filtered to backlog > 0, sorted highest first
       };
     });
   },
