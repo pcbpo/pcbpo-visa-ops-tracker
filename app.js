@@ -143,6 +143,36 @@ async function showStaffScreen() {
   renderIndividualFields(todayByDept);
   renderSharedFields();
   updateEntryCountFromByDept(todayByDept);
+  await renderBacklog();
+}
+
+async function renderBacklog() {
+  const container = document.getElementById("backlogContainer");
+  if (!container) return;
+  try {
+    const backlog = await Data.getBacklogForEmployee(Auth.currentEmployee.id, employeeFields);
+    const withOutstanding = backlog.filter((b) => b.backlog > 0);
+    if (withOutstanding.length === 0) {
+      container.innerHTML = "";
+      return;
+    }
+    container.innerHTML = `
+      <div class="section-label" style="margin-top:18px;">Outstanding (not yet reviewed)</div>
+      ${withOutstanding
+        .map(
+          (b) => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 14px; background:#FAEEDA40; border:1px solid #BA751740; border-radius:9px; margin-bottom:6px; font-size:13px;">
+          <span>${b.receivedFieldLabel.replace(" received", "")}</span>
+          <span style="font-weight:500;">${b.backlog} pending</span>
+        </div>
+      `
+        )
+        .join("")}
+    `;
+  } catch (e) {
+    console.error("Couldn't load backlog:", e);
+    container.innerHTML = "";
+  }
 }
 
 function deptName(deptId) {
@@ -578,20 +608,62 @@ async function handleLogOffWithSummary() {
 
   document.getElementById("summaryGreeting").textContent =
     `Nice work today, ${Auth.currentEmployee.full_name}.`;
+
   const inT = attendance?.in_time ? formatTime(attendance.in_time) : "—";
-  const outT = formatTime(new Date().toISOString());
-  document.getElementById("summaryTimes").textContent = `In: ${inT}  ·  Out: ${outT}`;
+  const outTime = new Date();
+  const outT = formatTime(outTime.toISOString());
+
+  let durationText = "";
+  if (attendance?.in_time) {
+    const inTime = new Date(attendance.in_time);
+    const minutesWorked = Math.max(0, Math.round((outTime - inTime) / 60000));
+    const hours = Math.floor(minutesWorked / 60);
+    const minutes = minutesWorked % 60;
+    durationText = `  ·  ${hours}h ${minutes}m`;
+  }
+  document.getElementById("summaryTimes").textContent = `In: ${inT}  ·  Out: ${outT}${durationText}`;
+
+  const grandTotal = Object.values(todayTotals).reduce((s, v) => s + v, 0);
 
   const rowsContainer = document.getElementById("summaryRows");
   rowsContainer.innerHTML = "";
   const individual = employeeFields.filter((f) => f.entry_mode === "individual");
   individual.forEach((f) => {
     const val = todayTotals[f.id] || 0;
+    const pct = grandTotal > 0 ? Math.round((val / grandTotal) * 100) : 0;
     const row = document.createElement("div");
     row.className = "summary-row";
-    row.innerHTML = `<span>${f.field_label}</span><span style="font-weight:500;">${val}</span>`;
+    row.innerHTML = `
+      <span>${f.field_label}</span>
+      <span>
+        <span style="font-weight:500;">${val}</span>
+        ${grandTotal > 0 ? `<span style="font-size:11.5px; color:var(--gray); margin-left:6px;">${pct}%</span>` : ""}
+      </span>
+    `;
     rowsContainer.appendChild(row);
   });
+
+  // Trend vs the employee's own recent average — shown once enough
+  // history exists; quietly omitted otherwise rather than showing a
+  // misleading comparison from 1-2 days of data.
+  const trendBox = document.getElementById("summaryTrendBox");
+  try {
+    const recent = await Data.getRecentDailyAverage(Auth.currentEmployee.id, 5);
+    if (recent && recent.average > 0) {
+      const changePct = Math.round(((grandTotal - recent.average) / recent.average) * 100);
+      const arrow = changePct > 0 ? "▲" : changePct < 0 ? "▼" : "—";
+      const verb = changePct > 0 ? "more" : changePct < 0 ? "fewer" : "the same as";
+      trendBox.textContent =
+        `${arrow} ${Math.abs(changePct)}% ${verb} than your last ${recent.daysUsed}-day average ` +
+        `(${Math.round(recent.average)} entries/day)`;
+      trendBox.classList.remove("hidden");
+    } else {
+      trendBox.classList.add("hidden");
+    }
+  } catch (e) {
+    console.error("Couldn't compute trend:", e);
+    trendBox.classList.add("hidden");
+  }
 
   const noteBox = document.getElementById("summaryNoteBox");
   const noteLines = [];
