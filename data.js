@@ -535,6 +535,65 @@ const Data = {
     }));
   },
 
+  // Total outstanding backlog (all-time received minus reviewed, summed
+  // across every paired field and every department) for EVERY active
+  // employee in one pass — used for the manager's staff snapshot column.
+  // Returns { [employee_id]: totalBacklog }. Employees with no paired
+  // fields, or fully caught up, simply won't appear (treated as 0).
+  async getBacklogTotalsForAllStaff() {
+    // Step 1: which fields are part of a backlog pair at all.
+    const { data: pairedFields, error: pfErr } = await supabaseClient
+      .from("field_definitions")
+      .select("id, field_key, backlog_pair_field_key")
+      .not("backlog_pair_field_key", "is", null);
+    if (pfErr) throw pfErr;
+    if (pairedFields.length === 0) return {};
+
+    const fieldKeyToId = {};
+    const { data: allFields, error: afErr } = await supabaseClient
+      .from("field_definitions")
+      .select("id, field_key");
+    if (afErr) throw afErr;
+    allFields.forEach((f) => (fieldKeyToId[f.field_key] = f.id));
+
+    const relevantFieldIds = new Set();
+    pairedFields.forEach((f) => {
+      relevantFieldIds.add(f.id);
+      const pairedId = fieldKeyToId[f.backlog_pair_field_key];
+      if (pairedId) relevantFieldIds.add(pairedId);
+    });
+
+    // Step 2: pull every relevant entry for every employee in one query.
+    const { data: entries, error: enErr } = await supabaseClient
+      .from("daily_entries")
+      .select("employee_id, field_id, amount, entry_type")
+      .in("field_id", [...relevantFieldIds])
+      .in("entry_type", ["individual_increment", "individual_manual_set"]);
+    if (enErr) throw enErr;
+
+    // totals[employee_id][field_id] = amount
+    const totals = {};
+    for (const row of entries) {
+      totals[row.employee_id] = totals[row.employee_id] || {};
+      totals[row.employee_id][row.field_id] =
+        (totals[row.employee_id][row.field_id] || 0) + row.amount;
+    }
+
+    // Step 3: for each employee, sum backlog across all their paired fields.
+    const result = {};
+    for (const employeeId of Object.keys(totals)) {
+      let backlogSum = 0;
+      for (const pf of pairedFields) {
+        const receivedTotal = totals[employeeId][pf.id] || 0;
+        const pairedId = fieldKeyToId[pf.backlog_pair_field_key];
+        const reviewedTotal = pairedId ? totals[employeeId][pairedId] || 0 : 0;
+        backlogSum += Math.max(0, receivedTotal - reviewedTotal);
+      }
+      result[employeeId] = backlogSum;
+    }
+    return result;
+  },
+
   // Two-week trend check used for the PPIP alert. Returns employees
   // whose average daily output over the last 10 working days is down
   // significantly vs the 10 working days before that.
