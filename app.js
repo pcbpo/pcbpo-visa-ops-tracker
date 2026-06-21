@@ -161,9 +161,27 @@ async function renderBacklog() {
       ${withOutstanding
         .map(
           (b) => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 14px; background:#FAEEDA40; border:1px solid #BA751740; border-radius:9px; margin-bottom:6px; font-size:13px;">
-          <span>${b.receivedFieldLabel.replace(" received", "")}</span>
-          <span style="font-weight:500;">${b.backlog} pending</span>
+        <div style="padding:8px 14px; background:#FAEEDA40; border:1px solid #BA751740; border-radius:9px; margin-bottom:6px; font-size:13px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span>${b.receivedFieldLabel.replace(" received", "")}</span>
+            <span style="font-weight:500;">${b.backlog} pending</span>
+          </div>
+          ${
+            b.byDepartment.length > 0
+              ? `<div style="margin-top:6px; padding-top:6px; border-top:1px solid #BA751730;">
+                  ${b.byDepartment
+                    .map(
+                      (d) => `
+                    <div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;">
+                      <span style="color:var(--gray);">${d.deptName}</span>
+                      <span>${d.backlog}</span>
+                    </div>
+                  `
+                    )
+                    .join("")}
+                </div>`
+              : ""
+          }
         </div>
       `
         )
