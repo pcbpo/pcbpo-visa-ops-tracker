@@ -121,6 +121,19 @@ async function handleLogout() {
 
 // ---------- staff entry screen ----------
 
+const ALL_CYCLES = [
+  { key: "le_cycle",            label: "LE Cycle" },
+  { key: "health_check",        label: "Health Check Booking" },
+  { key: "passport_collection", label: "Passport Collection" },
+  { key: "passport_compiling",  label: "Passport Compiling" },
+  { key: "visa_renewal",        label: "Visa Renewal" },
+  { key: "payment_settlement",  label: "Payment Settlements" },
+  { key: "petty_cash_wo",       label: "Petty Cash Work Orders" },
+];
+
+// Cycles borrowed for today: { [cycleKey]: { fields: [...], todayByDept: {...} } }
+let borrowedCycles = {};
+
 async function showStaffScreen() {
   document.getElementById("loginScreen").classList.add("hidden");
   document.getElementById("staffScreen").classList.remove("hidden");
@@ -140,11 +153,155 @@ async function showStaffScreen() {
   sharedEntries = await Data.getTodaySharedEntries();
   const todayByDept = await Data.getTodayTotalsByDepartment(Auth.currentEmployee.id);
 
+  borrowedCycles = {};
+  populateBorrowedCycleDropdown();
+
   renderIndividualFields(todayByDept);
   renderSharedFields();
+  renderBorrowedCycles();
   updateEntryCountFromByDept(todayByDept);
   await renderBacklog();
 }
+
+function populateBorrowedCycleDropdown() {
+  const select = document.getElementById("addBorrowedCycleSelect");
+  if (!select) return;
+
+  // Get cycles the employee is already assigned to — no point offering those
+  const assignedCycleKeys = new Set(
+    (Auth.currentEmployee.cycles || []).map((c) => c.cycle)
+  );
+
+  select.innerHTML = `<option value="">+ Log work in another cycle…</option>` +
+    ALL_CYCLES
+      .filter((c) => !assignedCycleKeys.has(c.key))
+      .map((c) => `<option value="${c.key}">${c.label}</option>`)
+      .join("");
+
+  select.onchange = async () => {
+    const cycleKey = select.value;
+    if (!cycleKey) return;
+    if (borrowedCycles[cycleKey]) {
+      // Already added — just scroll to it
+      select.value = "";
+      return;
+    }
+    select.disabled = true;
+    try {
+      const fields = await Data.getFieldsForCycle(cycleKey);
+      const todayByDept = await Data.getTodayTotalsByDepartment(Auth.currentEmployee.id);
+      borrowedCycles[cycleKey] = { fields, todayByDept };
+      renderBorrowedCycles();
+      // Remove from dropdown since it's now shown
+      const opt = select.querySelector(`option[value="${cycleKey}"]`);
+      if (opt) opt.remove();
+    } catch (e) {
+      alert("Couldn't load cycle fields: " + e.message);
+    } finally {
+      select.value = "";
+      select.disabled = false;
+    }
+  };
+}
+
+function renderBorrowedCycles() {
+  const container = document.getElementById("borrowedCyclesContainer");
+  if (!container) return;
+  container.innerHTML = "";
+
+  for (const [cycleKey, { fields, todayByDept }] of Object.entries(borrowedCycles)) {
+    const cycleLabel = ALL_CYCLES.find((c) => c.key === cycleKey)?.label || cycleKey;
+    const individual = fields.filter((f) => f.entry_mode === "individual");
+    const shared = fields.filter((f) => f.entry_mode === "shared_batch");
+
+    const section = document.createElement("div");
+    section.style.marginTop = "20px";
+
+    section.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div class="section-label" style="margin:0;">${cycleLabel} — borrowed today</div>
+        <button data-remove-cycle="${cycleKey}" style="font-size:11px; color:var(--gray); background:none; border:none; cursor:pointer;">Remove</button>
+      </div>
+    `;
+
+    // Individual fields for this borrowed cycle
+    if (individual.length > 0) {
+      const groups = {};
+      individual.forEach((f) => {
+        const g = f.field_group || "General";
+        groups[g] = groups[g] || [];
+        groups[g].push(f);
+      });
+      for (const [groupName, groupFields] of Object.entries(groups)) {
+        const groupDiv = document.createElement("div");
+        groupDiv.className = "field-group";
+        groupDiv.innerHTML = `<div class="group-label">${groupName}</div>`;
+        groupFields.forEach((f) => {
+          groupDiv.appendChild(buildFieldCard(f, todayByDept[f.id] || {}));
+        });
+        section.appendChild(groupDiv);
+      }
+    }
+
+    // Shared-batch fields for this borrowed cycle — shown read-only
+    // if already logged, or as an entry row if not yet. Same logic as
+    // the main shared fields section.
+    if (shared.length > 0) {
+      const sharedLabel = document.createElement("div");
+      sharedLabel.className = "section-label";
+      sharedLabel.style.marginTop = "12px";
+      sharedLabel.textContent = "Team-shared — " + cycleLabel;
+      section.appendChild(sharedLabel);
+
+      const sharedDiv = document.createElement("div");
+      shared.forEach((f) => {
+        const entry = sharedEntries[f.id];
+        const card = document.createElement("div");
+        card.className = "shared-card" + (entry ? " logged" : "");
+        if (entry) {
+          card.innerHTML = `
+            <div class="shared-top">
+              <span class="field-label">${f.field_label}</span>
+              <span class="shared-value">${entry.total}</span>
+            </div>
+            <div class="shared-meta">Logged by ${entry.loggedBy}, ${formatTime(entry.loggedAt)}</div>
+          `;
+        } else {
+          card.innerHTML = `
+            <div class="shared-top"><span class="field-label">${f.field_label}</span></div>
+            <div class="shared-entry-row">
+              <span style="font-size:12px;color:var(--gray);">Not yet logged today.</span>
+              ${f.requires_client_dept ? `<select data-shared-add-dept="${f.id}"><option value="">+ Add department…</option>${deptOptionsHtml([])}</select>` : ""}
+              <button class="btn-log" data-shared-submit="${f.id}">Log it</button>
+            </div>
+          `;
+        }
+        sharedDiv.appendChild(card);
+      });
+      // Wire shared events on this section using existing handlers
+      sharedDiv.querySelectorAll("[data-shared-submit]").forEach((btn) => {
+        btn.onclick = () => handleSharedSubmit(btn.dataset.sharedSubmit);
+      });
+      section.appendChild(sharedDiv);
+    }
+
+    section.querySelector(`[data-remove-cycle="${cycleKey}"]`).onclick = () => {
+      delete borrowedCycles[cycleKey];
+      // Put cycle back in dropdown
+      const select = document.getElementById("addBorrowedCycleSelect");
+      const cycleLabel2 = ALL_CYCLES.find((c) => c.key === cycleKey)?.label || cycleKey;
+      const opt = document.createElement("option");
+      opt.value = cycleKey;
+      opt.textContent = cycleLabel2;
+      select.appendChild(opt);
+      renderBorrowedCycles();
+    };
+
+    container.appendChild(section);
+  }
+}
+
+
 
 async function renderBacklog() {
   const container = document.getElementById("backlogContainer");
@@ -668,6 +825,8 @@ async function handleLogOffWithSummary() {
 
   const rowsContainer = document.getElementById("summaryRows");
   rowsContainer.innerHTML = "";
+
+  // Main assigned fields
   const individual = employeeFields.filter((f) => f.entry_mode === "individual");
   individual.forEach((f) => {
     const val = todayTotals[f.id] || 0;
@@ -683,6 +842,35 @@ async function handleLogOffWithSummary() {
     `;
     rowsContainer.appendChild(row);
   });
+
+  // Borrowed cycle fields — grouped by cycle, only shown if any work logged
+  for (const [cycleKey, { fields }] of Object.entries(borrowedCycles)) {
+    const cycleLabel = ALL_CYCLES.find((c) => c.key === cycleKey)?.label || cycleKey;
+    const borrowedIndividual = fields.filter((f) => f.entry_mode === "individual");
+    const anyLogged = borrowedIndividual.some((f) => todayTotals[f.id] > 0);
+    if (!anyLogged) continue;
+
+    const heading = document.createElement("div");
+    heading.style.cssText = "font-size:11.5px; color:var(--gray); text-transform:uppercase; letter-spacing:0.4px; margin:12px 0 4px;";
+    heading.textContent = cycleLabel + " (borrowed today)";
+    rowsContainer.appendChild(heading);
+
+    borrowedIndividual.forEach((f) => {
+      const val = todayTotals[f.id] || 0;
+      if (val === 0) return;
+      const pct = grandTotal > 0 ? Math.round((val / grandTotal) * 100) : 0;
+      const row = document.createElement("div");
+      row.className = "summary-row";
+      row.innerHTML = `
+        <span>${f.field_label}</span>
+        <span>
+          <span style="font-weight:500;">${val}</span>
+          ${grandTotal > 0 ? `<span style="font-size:11.5px; color:var(--gray); margin-left:6px;">${pct}%</span>` : ""}
+        </span>
+      `;
+      rowsContainer.appendChild(row);
+    });
+  }
 
   // Trend vs the employee's own recent average — shown once enough
   // history exists; quietly omitted otherwise rather than showing a
