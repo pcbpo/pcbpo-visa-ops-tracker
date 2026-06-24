@@ -133,6 +133,20 @@ const Data = {
     );
   },
 
+  // Returns ALL fields for a given cycle regardless of role — used when
+  // a staff member borrows a cycle for the day without being formally
+  // assigned to any role within it.
+  async getFieldsForCycle(cycle) {
+    const { data, error } = await supabaseClient
+      .from("field_definitions")
+      .select("*")
+      .eq("active", true)
+      .eq("cycle", cycle)
+      .order("sort_order");
+    if (error) throw error;
+    return data;
+  },
+
   // Running backlog per person: for each "received" field that has a
   // backlog_pair_field_key set, computes (all-time received total) −
   // (all-time reviewed/processed total). This is NOT reset daily — it's
