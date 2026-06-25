@@ -70,7 +70,14 @@ const Auth = {
 
     if (cycErr) throw cycErr;
 
-    this.currentEmployee = { ...employee, cycles: cycles || [] };
+    // role_in_cycle is now a text[] — flatten all roles across all
+    // cycles into the format getFieldsForEmployee expects.
+    const normalizedCycles = (cycles || []).flatMap((c) =>
+      (Array.isArray(c.role_in_cycle) ? c.role_in_cycle : [c.role_in_cycle])
+        .map((role) => ({ cycle: c.cycle, role_in_cycle: role }))
+    );
+
+    this.currentEmployee = { ...employee, cycles: normalizedCycles };
     return this.currentEmployee;
   },
 
