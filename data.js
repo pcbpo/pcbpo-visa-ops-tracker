@@ -230,22 +230,16 @@ const Data = {
   // increments AND the most recent manual_set (a manual set replaces
   // everything logged before it, not adds to it).
   async getTodayTotals(employeeId) {
-    const today = new Date().toISOString().slice(0, 10);
-    const { data, error } = await supabaseClient
-      .from("daily_entries")
-      .select("field_id, amount, entry_type, created_at")
-      .eq("employee_id", employeeId)
-      .eq("date", today)
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-
+    // Derive from getTodayTotalsByDepartment which correctly handles
+    // the mix of manual-set and increment entries per department.
+    // A manual_set for dept A replaces only dept A's number, not all
+    // other departments' increments — which is what the old flat
+    // version got wrong when Madhuka typed for some departments and
+    // tapped +1 for others.
+    const byDept = await this.getTodayTotalsByDepartment(employeeId);
     const totals = {};
-    for (const row of data) {
-      if (row.entry_type === "individual_manual_set") {
-        totals[row.field_id] = row.amount; // replaces, doesn't add
-      } else if (row.entry_type === "individual_increment") {
-        totals[row.field_id] = (totals[row.field_id] || 0) + row.amount;
-      }
+    for (const [fieldId, deptMap] of Object.entries(byDept)) {
+      totals[fieldId] = Object.values(deptMap).reduce((s, v) => s + v, 0);
     }
     return totals;
   },
