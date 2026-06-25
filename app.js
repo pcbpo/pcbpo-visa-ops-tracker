@@ -986,24 +986,44 @@ async function loadManagerToday() {
   }
 
   const tbody = document.getElementById("mgrStaffTableBody");
-  tbody.innerHTML = `<tr><td colspan="5" class="muted">Loading staff…</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="6" class="muted">Loading staff…</td></tr>`;
   try {
     const [staff, backlogTotals] = await Promise.all([
       Data.getAllStaffSnapshot(),
       Data.getBacklogTotalsForAllStaff(),
     ]);
     if (staff.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="5" class="muted">No active staff yet.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" class="muted">No active staff yet.</td></tr>`;
       return;
     }
     tbody.innerHTML = staff
       .map((s) => {
         const backlog = backlogTotals[s.id] || 0;
+
+        let hoursWorked = "—";
+        if (s.in_time && s.out_time) {
+          const mins = Math.round((new Date(s.out_time) - new Date(s.in_time)) / 60000);
+          const h = Math.floor(mins / 60);
+          const m = mins % 60;
+          hoursWorked = `${h}h ${m}m`;
+        } else if (s.in_time && !s.out_time) {
+          const mins = Math.round((new Date() - new Date(s.in_time)) / 60000);
+          const h = Math.floor(mins / 60);
+          const m = mins % 60;
+          hoursWorked = `${h}h ${m}m <span style="font-size:10px;color:var(--teal);">●</span>`;
+        }
+
+        const dateStr = s.in_time
+          ? new Date(s.in_time).toLocaleDateString(undefined, { day: "numeric", month: "short" })
+          : "—";
+
         return `
         <tr>
           <td class="name">${s.full_name}</td>
+          <td class="muted">${dateStr}</td>
           <td class="muted">${s.in_time ? formatTime(s.in_time) : "—"}</td>
           <td class="muted">${s.out_time ? formatTime(s.out_time) : "—"}</td>
+          <td class="muted">${hoursWorked}</td>
           <td>${s.today_total}</td>
           <td>${backlog > 0 ? `<span style="color:#BA7517; font-weight:500;">${backlog}</span>` : `<span class="muted">0</span>`}</td>
         </tr>
@@ -1011,7 +1031,7 @@ async function loadManagerToday() {
       })
       .join("");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">Couldn't load staff: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">Couldn't load staff: ${e.message}</td></tr>`;
   }
 }
 
