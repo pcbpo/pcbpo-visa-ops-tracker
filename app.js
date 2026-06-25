@@ -1000,6 +1000,13 @@ async function loadManagerToday() {
       .map((s) => {
         const backlog = backlogTotals[s.id] || 0;
 
+        const dateStr = s.in_time
+          ? new Date(s.in_time).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
+          : "—";
+
+        const inStr = s.in_time ? formatTime(s.in_time) : "—";
+        const outStr = s.out_time ? formatTime(s.out_time) : "—";
+
         let hoursWorked = "—";
         if (s.in_time && s.out_time) {
           const mins = Math.round((new Date(s.out_time) - new Date(s.in_time)) / 60000);
@@ -1010,22 +1017,22 @@ async function loadManagerToday() {
           const mins = Math.round((new Date() - new Date(s.in_time)) / 60000);
           const h = Math.floor(mins / 60);
           const m = mins % 60;
-          hoursWorked = `${h}h ${m}m <span style="font-size:10px;color:var(--teal);">●</span>`;
+          hoursWorked = `${h}h ${m}m (active)`;
         }
 
-        const dateStr = s.in_time
-          ? new Date(s.in_time).toLocaleDateString(undefined, { day: "numeric", month: "short" })
-          : "—";
+        const backlogCell = backlog > 0
+          ? `<span style="color:#BA7517; font-weight:500;">${backlog}</span>`
+          : `<span class="muted">0</span>`;
 
         return `
         <tr>
           <td class="name">${s.full_name}</td>
           <td class="muted">${dateStr}</td>
-          <td class="muted">${s.in_time ? formatTime(s.in_time) : "—"}</td>
-          <td class="muted">${s.out_time ? formatTime(s.out_time) : "—"}</td>
+          <td class="muted">${inStr}</td>
+          <td class="muted">${outStr}</td>
           <td class="muted">${hoursWorked}</td>
           <td>${s.today_total}</td>
-          <td>${backlog > 0 ? `<span style="color:#BA7517; font-weight:500;">${backlog}</span>` : `<span class="muted">0</span>`}</td>
+          <td>${backlogCell}</td>
         </tr>
       `;
       })
